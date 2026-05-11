@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List
 
 
 class Settings:
@@ -54,21 +54,22 @@ class Settings:
     # Backend/API configuration
     # ------------------------------------------------------------------
 
-    API_HOST = "127.0.0.1"
+    API_HOST = "0.0.0.0"
     API_PORT = 8000
-    API_BASE_URL = f"http://{API_HOST}:{API_PORT}"
 
+    # Cloud backend used by Streamlit Cloud and the mobile app.
+    API_BASE_URL = "https://structfi.onrender.com"
+
+    # Local dashboard defaults. Streamlit Cloud should use st.secrets["API_URL"].
     DASHBOARD_HOST = "127.0.0.1"
     DASHBOARD_PORT = 8501
     DASHBOARD_URL = f"http://{DASHBOARD_HOST}:{DASHBOARD_PORT}"
 
-    CORS_ALLOWED_ORIGINS = [
-        "http://localhost:3000",
-        "http://localhost:5173",
-        "http://localhost:8501",
-        "http://127.0.0.1:8501",
-        "http://127.0.0.1:8000",
-    ]
+    # Keep permissive for demo because:
+    # - Streamlit Cloud calls the API
+    # - Mobile app calls the API
+    # - Local dashboard may still call the API
+    CORS_ALLOWED_ORIGINS = ["*"]
 
     REQUEST_TIMEOUT_SECONDS = 120
 
@@ -95,6 +96,7 @@ class Settings:
         "radius_enabled": True,
         "telemetry_poll_interval_seconds": 5,
         "config_sync_interval_seconds": 15,
+        "public_api_url": API_BASE_URL,
         "description": (
             "Prototype centralized controller for managing simulated ESP32-S3 Wi-Fi nodes, "
             "VLAN profiles, telemetry, alerts, and AI recommendations."
@@ -190,6 +192,16 @@ class Settings:
             "dhcp_enabled": True,
             "description": "Internet-only isolated guest users.",
         },
+        {
+            "vlan_id": DEFAULT_IOT_VLAN,
+            "name": "IoT",
+            "zone_role": "iot",
+            "zone": "iot",
+            "subnet": "192.168.40.0/24",
+            "gateway": "192.168.40.1",
+            "dhcp_enabled": True,
+            "description": "Optional IoT / sensor network for prototype expansion.",
+        },
     ]
 
     SSID_PROFILES = [
@@ -202,6 +214,7 @@ class Settings:
             "radius_enabled": True,
             "fast_roaming_enabled": True,
             "roaming_80211r": True,
+            "max_clients_per_node": DEFAULT_MAX_CLIENTS_PER_NODE,
         },
         {
             "ssid_name": "StructFi-Management",
@@ -213,6 +226,7 @@ class Settings:
             "fast_roaming_enabled": True,
             "roaming_80211r": True,
             "hidden": True,
+            "max_clients_per_node": 8,
         },
         {
             "ssid_name": "StructFi-Guest",
@@ -223,6 +237,7 @@ class Settings:
             "radius_enabled": False,
             "fast_roaming_enabled": False,
             "client_isolation": True,
+            "max_clients_per_node": DEFAULT_MAX_CLIENTS_PER_NODE,
         },
     ]
 
@@ -446,6 +461,7 @@ class Settings:
         "enable_ai": True,
         "enable_ids": True,
         "telemetry_history_limit": 500,
+        "auto_apply_latest_plan_if_empty": True,
     }
 
     ROOM_CLIENT_DENSITY = {
@@ -482,9 +498,10 @@ class Settings:
     # ------------------------------------------------------------------
 
     MOBILE_API = {
-        "base_url_android_emulator": "http://10.0.2.2:8000",
-        "base_url_ios_simulator": "http://127.0.0.1:8000",
-        "base_url_physical_device_note": "Use laptop LAN IP, e.g. http://192.168.1.20:8000",
+        "base_url": API_BASE_URL,
+        "base_url_android_emulator": API_BASE_URL,
+        "base_url_ios_simulator": API_BASE_URL,
+        "base_url_physical_device_note": "Use deployed backend URL for the demo.",
         "refresh_interval_seconds": 5,
         "screens": [
             "Dashboard",
@@ -493,6 +510,7 @@ class Settings:
             "Clients",
             "Alerts",
             "AI Recommendations",
+            "Management",
         ],
     }
 
