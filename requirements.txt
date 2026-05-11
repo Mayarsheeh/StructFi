@@ -1,0 +1,14 @@
+fastapi
+uvicorn
+streamlit
+sqlalchemy
+pydantic
+numpy
+matplotlib
+python-multipart
+reportlab
+pandas
+openpyxl
+pillow
+ezdxf
+opencv-python

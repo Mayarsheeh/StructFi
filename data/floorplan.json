@@ -1,0 +1,86 @@
+{
+  "building_name": "StructiFi Demo Floor",
+  "rooms": [
+    {
+      "id": 1,
+      "name": "Server Room",
+      "x": 0,
+      "y": 0,
+      "width": 4,
+      "height": 4,
+      "zone": "management"
+    },
+    {
+      "id": 2,
+      "name": "Office A",
+      "x": 4,
+      "y": 0,
+      "width": 6,
+      "height": 4,
+      "zone": "staff"
+    },
+    {
+      "id": 3,
+      "name": "Office B",
+      "x": 0,
+      "y": 4,
+      "width": 4,
+      "height": 6,
+      "zone": "staff"
+    },
+    {
+      "id": 4,
+      "name": "Meeting Room",
+      "x": 4,
+      "y": 4,
+      "width": 6,
+      "height": 6,
+      "zone": "staff"
+    },
+    {
+      "id": 5,
+      "name": "Guest Lounge",
+      "x": 10,
+      "y": 0,
+      "width": 5,
+      "height": 10,
+      "zone": "guest"
+    }
+  ],
+  "clients": [
+    {
+      "id": 1,
+      "name": "Client-1",
+      "x": 5.0,
+      "y": 1.0,
+      "speed": 0.5,
+      "role": "staff",
+      "path": [[5.0,1.0],[8.0,2.0],[8.5,5.0],[8.5,8.0]]
+    },
+    {
+      "id": 2,
+      "name": "Client-2",
+      "x": 1.0,
+      "y": 8.0,
+      "speed": 0.4,
+      "role": "staff",
+      "path": [[1.0,8.0],[2.0,6.0],[3.0,3.0],[5.0,2.0]]
+    },
+    {
+      "id": 3,
+      "name": "Guest-1",
+      "x": 12.0,
+      "y": 2.0,
+      "speed": 0.3,
+      "role": "guest",
+      "path": [[12.0,2.0],[13.0,4.0],[12.0,7.0],[11.0,8.0]]
+    }
+  ],
+  "node_status_map": {
+    "1": "active",
+    "2": "active",
+    "3": "degraded",
+    "4": "active",
+    "5": "down"
+  }
+}
