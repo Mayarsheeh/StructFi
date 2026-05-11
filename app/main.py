@@ -20,7 +20,7 @@ except Exception:
         APP_VERSION = "0.2.0-demo"
         PROJECT_NAME = "StructFi"
         PROJECT_FULL_NAME = "Low-Cost Enterprise Wi-Fi System Prototype"
-        API_BASE_URL = "http://127.0.0.1:8000"
+        API_BASE_URL = "https://structfi.onrender.com"
         CORS_ALLOWED_ORIGINS = ["*"]
         CENTRAL_ROUTER = {"name": "StructFi Central Controller", "management_ip": "192.168.10.1"}
         VLAN_PROFILES = []
@@ -127,6 +127,85 @@ def _model_to_dict(obj: Any) -> Any:
     return obj
 
 
+
+def _unwrap_plan_payload(plan: Any) -> Optional[Dict[str, Any]]:
+    """
+    Accept all plan shapes used across the project and return the actual planning payload.
+
+    Supported shapes:
+    - {node_plan: [...], summary: ...}
+    - {nodes: [...], summary: ...}
+    - {result: {...}}
+    - {data: {...}}
+    - {plan_result: {...}}
+    - {message: ..., result: {...}}
+    """
+    plan = _model_to_dict(plan)
+
+    if not isinstance(plan, dict):
+        return None
+
+    for wrapper_key in ["plan_result", "result", "data"]:
+        wrapped = plan.get(wrapper_key)
+        if isinstance(wrapped, dict):
+            unwrapped = _unwrap_plan_payload(wrapped)
+            if isinstance(unwrapped, dict):
+                return unwrapped
+
+    return plan
+
+
+def _plan_has_nodes(plan: Optional[Dict[str, Any]]) -> bool:
+    return len(_extract_plan_nodes(plan)) > 0
+
+
+def _simulation_state_needs_plan() -> bool:
+    state = _state_dict()
+    node_runtime = state.get("node_runtime", []) or []
+    node_plan = state.get("node_plan", []) or []
+    building = state.get("building")
+    return not node_runtime or not node_plan or building is None
+
+
+def _apply_latest_plan_to_simulation_or_raise() -> Dict[str, Any]:
+    """
+    Root fix for dashboard/mobile sync:
+    always load the latest real plan into the simulator, even if API responses wrap it
+    under plan_result/result/data. This keeps Render simulation state in sync with the
+    latest CAD planning output used by Streamlit and the mobile app.
+    """
+    plan = _unwrap_plan_payload(_get_or_create_latest_plan())
+
+    if not isinstance(plan, dict) or not _plan_has_nodes(plan):
+        raise HTTPException(
+            status_code=404,
+            detail="No node plan found. Run Extract Rooms and Run AI Planning first.",
+        )
+
+    try:
+        simulator.load_cad_plan(plan)
+        return simulator.get_state()
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to apply CAD plan: {str(exc)}")
+
+
+def _auto_apply_latest_plan_if_state_empty() -> None:
+    """
+    Safety net for mobile and cloud demos.
+    If the simulator is empty but latest_plan.json exists, auto-apply it before returning state.
+    """
+    try:
+        if not _simulation_state_needs_plan():
+            return
+
+        plan = _unwrap_plan_payload(_get_latest_plan_model_or_dict())
+        if isinstance(plan, dict) and _plan_has_nodes(plan):
+            simulator.load_cad_plan(plan)
+    except Exception:
+        # Do not make read endpoints fail because auto-apply failed.
+        pass
+
+
 def _read_json(path: Path, default: Any = None) -> Any:
     if not path.exists():
         return default
@@ -156,7 +235,7 @@ def _get_latest_plan_model_or_dict() -> Optional[Dict[str, Any]]:
         if hasattr(advanced_cad_planner, "get_latest_plan_model"):
             result = advanced_cad_planner.get_latest_plan_model()
             if result:
-                return _model_to_dict(result)
+                return _unwrap_plan_payload(result)
     except Exception:
         pass
 
@@ -164,12 +243,12 @@ def _get_latest_plan_model_or_dict() -> Optional[Dict[str, Any]]:
         if hasattr(advanced_cad_planner, "get_latest_plan"):
             result = advanced_cad_planner.get_latest_plan()
             if result:
-                return _model_to_dict(result)
+                return _unwrap_plan_payload(result)
     except Exception:
         pass
 
     data = _read_json(Path("data/parsed/latest_plan.json"))
-    return data if isinstance(data, dict) else None
+    return _unwrap_plan_payload(data)
 
 
 def _plan_from_latest_building_or_dxf() -> Optional[Dict[str, Any]]:
@@ -199,11 +278,11 @@ def _plan_from_latest_building_or_dxf() -> Optional[Dict[str, Any]]:
 
 
 def _get_or_create_latest_plan() -> Dict[str, Any]:
-    plan = _get_latest_plan_model_or_dict()
+    plan = _unwrap_plan_payload(_get_latest_plan_model_or_dict())
     if plan:
         return plan
 
-    plan = _plan_from_latest_building_or_dxf()
+    plan = _unwrap_plan_payload(_plan_from_latest_building_or_dxf())
     if not plan:
         raise HTTPException(status_code=404, detail="No valid CAD planning result available")
 
@@ -218,6 +297,10 @@ def _extract_plan_nodes(plan: Optional[Dict[str, Any]]) -> List[Dict[str, Any]]:
         value = plan.get(key)
         if isinstance(value, list):
             return value
+
+    plan_result = plan.get("plan_result")
+    if isinstance(plan_result, dict):
+        return _extract_plan_nodes(plan_result)
 
     result = plan.get("result")
     if isinstance(result, dict):
@@ -399,11 +482,13 @@ def planner_nodes():
 
 @app.get("/simulation/state")
 def simulation_state():
+    _auto_apply_latest_plan_if_state_empty()
     return simulator.get_state()
 
 
 @app.get("/simulation/summary")
 def simulation_summary():
+    _auto_apply_latest_plan_if_state_empty()
     state = _state_dict()
     return {
         "simulation_source": state.get("simulation_source", "unknown"),
@@ -420,6 +505,7 @@ def simulation_summary():
 
 @app.post("/simulation/step")
 def simulation_step():
+    _auto_apply_latest_plan_if_state_empty()
     simulator.step()
     return simulator.get_state()
 
@@ -451,26 +537,41 @@ def simulation_reset():
 
 @app.post("/simulation/apply-cad-plan")
 def apply_cad_plan_to_simulation():
-    plan = _get_or_create_latest_plan()
+    state = _apply_latest_plan_to_simulation_or_raise()
+    plan = _unwrap_plan_payload(_get_or_create_latest_plan()) or {}
+    return {
+        "message": "CAD plan applied to simulation successfully",
+        "state": state,
+        "plan_summary": plan.get("summary", {}),
+        "runtime_nodes_count": len(state.get("node_runtime", []) or []),
+        "clients_count": len(state.get("clients", []) or []),
+    }
 
-    try:
-        simulator.load_cad_plan(plan)
-        return {
-            "message": "CAD plan applied to simulation successfully",
-            "state": simulator.get_state(),
-            "plan_summary": plan.get("summary", {}),
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to apply CAD plan: {str(e)}")
+
+@app.get("/simulation/apply-cad-plan")
+def apply_cad_plan_to_simulation_from_browser():
+    return apply_cad_plan_to_simulation()
+
+
+@app.post("/simulation/force-apply-latest-plan")
+def force_apply_latest_plan_to_simulation():
+    return apply_cad_plan_to_simulation()
+
+
+@app.get("/simulation/force-apply-latest-plan")
+def force_apply_latest_plan_to_simulation_from_browser():
+    return apply_cad_plan_to_simulation()
 
 
 @app.get("/simulation/nodes")
 def simulation_nodes():
+    _auto_apply_latest_plan_if_state_empty()
     return {"nodes": _state_dict().get("node_runtime", [])}
 
 
 @app.get("/simulation/clients")
 def simulation_clients():
+    _auto_apply_latest_plan_if_state_empty()
     return {"clients": _state_dict().get("clients", [])}
 
 
@@ -956,6 +1057,7 @@ def mobile_bootstrap():
 
 @app.get("/mobile/dashboard")
 def mobile_dashboard():
+    _auto_apply_latest_plan_if_state_empty()
     state = _state_dict()
     return {
         "state": state,
