@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Literal, Tuple
+from typing import Any, Dict, List, Optional, Literal, Tuple, Union
 from pydantic import BaseModel, Field
 
 
@@ -54,6 +54,43 @@ class InterferenceMetrics(BaseModel):
     adjacent_channel_risk: float = 0.0
 
 
+
+class HardwareProfileModel(BaseModel):
+    """
+    Hardware digital twin profile for a planned StructFi node.
+
+    This model links each simulated node to the physical unit proposed in GP1:
+    Raspberry Pi/OpenWRT, directional antenna, PoE power, Cat6 backhaul, and
+    wall/corner embedded installation constraints.
+    """
+    physical_node_model: str = "Raspberry Pi 4B + OpenWRT + Directional Antenna"
+    device_type: str = "Raspberry Pi 4B"
+    firmware: str = "OpenWRT"
+    firmware_role: str = "Managed radio unit"
+    antenna_type: str = "Directional sector antenna"
+    antenna_gain_dbi: float = 8.0
+    antenna_polarization: str = "Vertical"
+    frequency_band: str = "5GHz"
+    wifi_standard: str = "IEEE 802.11ax/ac"
+    channel: int = 36
+    channel_width_mhz: int = 40
+    tx_power_dbm: float = 18.0
+    poe_standard: str = "IEEE 802.3af"
+    backhaul_type: str = "Cat6 Ethernet"
+    mount_type: str = "Embedded wall/corner node"
+    mount_height_m: float = 1.35
+    housing_size_cm: str = "15x15"
+    max_clients: int = 25
+    estimated_power_watts: float = 7.5
+    controller_managed: bool = True
+    supports_fast_roaming: bool = True
+    roaming_standard: str = "IEEE 802.11r"
+    deployment_note: str = (
+        "Digital twin of the proposed physical StructFi node; intended for "
+        "simulation-based validation before real installation."
+    )
+
+
 class NodePlanModel(BaseModel):
     id: int
     name: str
@@ -82,6 +119,8 @@ class NodePlanModel(BaseModel):
     band: str = "5GHz"
     wifi_standard: str = "IEEE 802.11ax/ac"
     status: NodeStatus = "planned"
+
+    hardware_profile: Union[HardwareProfileModel, Dict[str, Any], str] = Field(default_factory=HardwareProfileModel)
 
     coverage: CoverageMetrics = Field(default_factory=CoverageMetrics)
     capacity: CapacityMetrics = Field(default_factory=CapacityMetrics)

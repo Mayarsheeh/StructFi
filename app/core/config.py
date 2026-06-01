@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+
 from pathlib import Path
 from typing import Dict, List
 
@@ -57,18 +59,19 @@ class Settings:
     API_HOST = "0.0.0.0"
     API_PORT = 8000
 
-    # Cloud backend used by Streamlit Cloud and the mobile app.
-    API_BASE_URL = "https://structfi.onrender.com"
+    # Local backend/dashboard defaults for the current simulation phase.
+    # Cloud/mobile links will be reintroduced later when the mobile administration app is implemented.
+    API_BASE_URL = os.getenv("STRUCTFI_API_BASE_URL", "http://127.0.0.1:8000").rstrip("/")
 
-    # Local dashboard defaults. Streamlit Cloud should use st.secrets["API_URL"].
-    DASHBOARD_HOST = "127.0.0.1"
-    DASHBOARD_PORT = 8501
-    DASHBOARD_URL = f"http://{DASHBOARD_HOST}:{DASHBOARD_PORT}"
+    DASHBOARD_HOST = os.getenv("STRUCTFI_DASHBOARD_HOST", "127.0.0.1")
+    DASHBOARD_PORT = int(os.getenv("STRUCTFI_DASHBOARD_PORT", "8501"))
+    DASHBOARD_URL = os.getenv(
+        "STRUCTFI_DASHBOARD_URL",
+        f"http://{DASHBOARD_HOST}:{DASHBOARD_PORT}",
+    ).rstrip("/")
 
-    # Keep permissive for demo because:
-    # - Streamlit Cloud calls the API
-    # - Mobile app calls the API
-    # - Local dashboard may still call the API
+    # Keep permissive for the local graduation demo because the Streamlit dashboard
+    # calls the FastAPI backend from a separate local port.
     CORS_ALLOWED_ORIGINS = ["*"]
 
     REQUEST_TIMEOUT_SECONDS = 120

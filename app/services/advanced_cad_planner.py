@@ -177,7 +177,7 @@ class AdvancedCADPlanner:
 
         result = {
             "project": "StructFi",
-            "planner_version": "unified-backend-demo-v4",
+            "planner_version": "unified-backend-demo-v5-hardware-digital-twin",
             "file_name": file_name,
             "source_file": file_name,
             "source_format": building.get("source_format", "UNKNOWN"),
@@ -973,6 +973,15 @@ class AdvancedCADPlanner:
             node["antenna_direction"] = antenna_direction
             node["status"] = "planned"
 
+            room_context = {
+                "id": node.get("room_id"),
+                "name": node.get("room_name", ""),
+                "label_text": node.get("room_name", ""),
+                "room_type": node.get("room_type", "unknown"),
+                "expected_clients": node.get("capacity_metrics", {}).get("expected_clients", 0) if isinstance(node.get("capacity_metrics"), dict) else 0,
+            }
+            node["hardware_profile"] = self._normalize_hardware_profile(node, room_context)
+
             coverage_metrics = node.get("coverage_metrics", {}) or {}
             capacity_metrics = node.get("capacity_metrics", {}) or {}
             telemetry = node.get("telemetry", {}) or {}
@@ -1242,6 +1251,129 @@ class AdvancedCADPlanner:
     # Node builder
     # ------------------------------------------------------------------
 
+    def _build_hardware_profile(
+        self,
+        room: Dict[str, Any],
+        node_role: str,
+        tx_power_dbm: float,
+        beamwidth_deg: float,
+        channel: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """
+        Build a realistic hardware digital twin profile for each planned node.
+
+        The values represent the physical StructFi unit proposed in GP1:
+        Raspberry Pi/OpenWRT, directional antenna, PoE, Cat6 backhaul, and
+        embedded wall/corner installation. Room type and node role tune capacity,
+        antenna gain, channel width, and operating assumptions.
+        """
+        room_type = self._room_type(room)
+        room_name = str(room.get("name", "") or room.get("label_text", "")).lower()
+        expected_clients = int(room.get("expected_clients", self._default_expected_clients(room)) or 0)
+
+        antenna_gain_dbi = 8.0
+        max_clients = 25
+        channel_width_mhz = 40
+        firmware_role = "Managed room radio unit"
+        install_priority = "standard"
+
+        if node_role == "corridor_backbone_node" or room_type == "corridor":
+            antenna_gain_dbi = 8.5
+            max_clients = 32
+            channel_width_mhz = 40
+            firmware_role = "Backbone roaming support radio unit"
+            install_priority = "backbone"
+        elif "call" in room_name or room_type in ["meeting", "open_area"]:
+            antenna_gain_dbi = 10.0
+            max_clients = 40
+            channel_width_mhz = 40
+            firmware_role = "High-density managed radio unit"
+            install_priority = "high_density"
+        elif room_type == "reception":
+            antenna_gain_dbi = 9.0
+            max_clients = 35
+            channel_width_mhz = 40
+            firmware_role = "Guest-facing managed radio unit"
+            install_priority = "guest_front_desk"
+        elif room_type in ["storage", "service", "kitchen", "server_room"]:
+            antenna_gain_dbi = 7.5
+            max_clients = 15
+            channel_width_mhz = 20
+            firmware_role = "Low-density service radio unit"
+            install_priority = "service_low_density"
+
+        max_clients = max(max_clients, min(45, expected_clients + 8))
+        selected_channel = int(channel if channel is not None else self.channels_5ghz[0])
+        estimated_power_watts = self._estimate_power_watts(float(tx_power_dbm))
+
+        return {
+            "physical_node_model": "Raspberry Pi 4B + OpenWRT + Directional Antenna",
+            "device_type": "Raspberry Pi 4B",
+            "firmware": "OpenWRT",
+            "firmware_role": firmware_role,
+            "cpu_class": "Quad-core ARM Cortex-A72 class",
+            "radio_adapter": "External dual-band Wi-Fi adapter",
+            "antenna_type": "Directional sector antenna",
+            "antenna_gain_dbi": round(float(antenna_gain_dbi), 2),
+            "antenna_polarization": "Vertical",
+            "frequency_band": "5GHz",
+            "wifi_standard": "IEEE 802.11ax/ac",
+            "channel": selected_channel,
+            "channel_width_mhz": int(channel_width_mhz),
+            "tx_power_dbm": round(float(tx_power_dbm), 2),
+            "beamwidth_deg": round(float(beamwidth_deg), 2),
+            "poe_standard": "IEEE 802.3af",
+            "backhaul_type": "Cat6 Ethernet",
+            "mount_type": "Embedded wall/corner node",
+            "mount_height_m": 1.35,
+            "housing_size_cm": "15x15",
+            "max_clients": int(max_clients),
+            "estimated_power_watts": estimated_power_watts,
+            "controller_managed": True,
+            "supports_fast_roaming": True,
+            "roaming_standard": "IEEE 802.11r",
+            "installation_priority": install_priority,
+            "deployment_mode": "simulation_digital_twin",
+            "real_world_mapping": "physical_structfi_node",
+            "deployment_note": (
+                "Digital twin of the proposed physical StructFi node. "
+                "The profile maps the simulated node to a deployable Raspberry Pi/OpenWRT "
+                "directional antenna unit powered by PoE and connected through Cat6 backhaul."
+            ),
+        }
+
+    def _normalize_hardware_profile(self, node: Dict[str, Any], room: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Keep old cached plans compatible while ensuring every node has a full
+        hardware digital twin profile.
+        """
+        current = node.get("hardware_profile")
+        tx_power = float(node.get("tx_power_dbm", node.get("tx_power", self.default_tx_power_dbm)) or self.default_tx_power_dbm)
+        beamwidth = float(node.get("beamwidth_deg", node.get("antenna_beamwidth", self.default_beamwidth_deg)) or self.default_beamwidth_deg)
+        channel = int(node.get("channel", self.channels_5ghz[0]) or self.channels_5ghz[0])
+
+        defaults = self._build_hardware_profile(
+            room=room,
+            node_role=str(node.get("node_role", "room_node")),
+            tx_power_dbm=tx_power,
+            beamwidth_deg=beamwidth,
+            channel=channel,
+        )
+
+        if not isinstance(current, dict):
+            return defaults
+
+        profile = dict(current)
+        for key, value in defaults.items():
+            profile.setdefault(key, value)
+
+        profile["channel"] = channel
+        profile["tx_power_dbm"] = round(tx_power, 2)
+        profile["beamwidth_deg"] = round(beamwidth, 2)
+        profile["wifi_standard"] = node.get("wifi_standard", profile.get("wifi_standard", "IEEE 802.11ax/ac"))
+        profile["estimated_power_watts"] = self._estimate_power_watts(tx_power)
+        return profile
+
     def _make_node(
         self,
         room: Dict[str, Any],
@@ -1266,12 +1398,17 @@ class AdvancedCADPlanner:
             "room_type": self._room_type(room),
             "zone": room.get("zone", "staff"),
             "node_role": node_role,
-            "hardware_profile": "ESP32-S3 embedded directional StructFi node",
+            "hardware_profile": self._build_hardware_profile(
+                room=room,
+                node_role=node_role,
+                tx_power_dbm=float(tx_power_dbm),
+                beamwidth_deg=float(beamwidth_deg),
+            ),
             "x": round(float(x), 4),
             "y": round(float(y), 4),
             "mounting": {
                 "type": "in-wall-corner",
-                "height_m": 1.6,
+                "height_m": 1.35,
                 "housing_size_cm": "15x15",
                 "installation_note": "Node is placed near wall/corner, not at room center.",
             },
@@ -1700,7 +1837,7 @@ class AdvancedCADPlanner:
 
         return {
             "project": "StructFi",
-            "planner_version": "unified-backend-demo-v4",
+            "planner_version": "unified-backend-demo-v5-hardware-digital-twin",
             "file_name": file_name,
             "source_file": file_name,
             "source_format": building.get("source_format", "UNKNOWN"),

@@ -1,9 +1,37 @@
+import os
+
 import requests
 import streamlit as st
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 
-API_URL = st.secrets.get("API_URL", "http://127.0.0.1:8000")
+LOCAL_DEFAULT_API_URL = "http://127.0.0.1:8000"
+
+
+def resolve_api_url() -> str:
+    """
+    Resolve the backend API URL for local development.
+
+    Priority:
+    1. Streamlit secrets: API_URL
+    2. Environment variable: STRUCTFI_API_URL or API_URL
+    3. Local FastAPI backend: http://127.0.0.1:8000
+
+    This keeps the dashboard runnable even when .streamlit/secrets.toml
+    is not available, and it avoids depending on the future mobile app setup.
+    """
+    api_url = None
+
+    try:
+        api_url = st.secrets.get("API_URL")
+    except Exception:
+        api_url = None
+
+    api_url = api_url or os.getenv("STRUCTFI_API_URL") or os.getenv("API_URL") or LOCAL_DEFAULT_API_URL
+    return str(api_url).rstrip("/")
+
+
+API_URL = resolve_api_url()
 
 st.set_page_config(
     page_title="StructiFi CAD Command Center",
@@ -438,6 +466,49 @@ def _dashboard_metric_number(value, default=0):
         return round(number, 2)
     except Exception:
         return value if value not in [None, ""] else default
+
+
+
+def _dashboard_hardware_profile(node):
+    profile = node.get("hardware_profile", {}) if isinstance(node, dict) else {}
+    return profile if isinstance(profile, dict) else {}
+
+
+def _dashboard_hw_value(profile, keys, default="-"):
+    if not isinstance(profile, dict):
+        return default
+    for key in keys:
+        value = profile.get(key)
+        if value not in [None, ""]:
+            return value
+    return default
+
+
+def _dashboard_build_hardware_rows(nodes):
+    rows = []
+    for idx, node in enumerate(nodes or [], start=1):
+        if not isinstance(node, dict):
+            continue
+        profile = _dashboard_hardware_profile(node)
+        rows.append({
+            "Node": node.get("name") or node.get("node_id") or f"Node {idx}",
+            "Room": node.get("room_name", "-"),
+            "Role": node.get("node_role", "room_node"),
+            "Device": _dashboard_hw_value(profile, ["device_type", "physical_node_model"], "Raspberry Pi 4B"),
+            "Firmware": _dashboard_hw_value(profile, ["firmware"], "OpenWRT"),
+            "Antenna": _dashboard_hw_value(profile, ["antenna_type"], "Directional"),
+            "Gain dBi": _dashboard_hw_value(profile, ["antenna_gain_dbi"], "-"),
+            "TX dBm": _dashboard_hw_value(profile, ["tx_power_dbm"], node.get("tx_power_dbm", node.get("tx_power", "-"))),
+            "Channel": _dashboard_hw_value(profile, ["channel"], node.get("channel", "-")),
+            "Width MHz": _dashboard_hw_value(profile, ["channel_width_mhz"], "-"),
+            "PoE": _dashboard_hw_value(profile, ["poe_standard"], "IEEE 802.3af"),
+            "Backhaul": _dashboard_hw_value(profile, ["backhaul_type"], "Cat6 Ethernet"),
+            "Mount": _dashboard_hw_value(profile, ["mount_type"], "Embedded wall/corner node"),
+            "Height m": _dashboard_hw_value(profile, ["mount_height_m"], "-"),
+            "Max Clients": _dashboard_hw_value(profile, ["max_clients"], "-"),
+            "Power W": _dashboard_hw_value(profile, ["estimated_power_watts"], "-"),
+        })
+    return rows
 
 def get_excel_export_url():
     return f"{API_URL}/export/excel"
@@ -1119,7 +1190,7 @@ placement = _dashboard_metric_number(
 st.markdown("""
 <div class="hero">
     <h1>StructFi Command Center</h1>
-    <p>Apple-style workflow dashboard for CAD extraction, AI node planning, RF heatmap validation, live simulation, AI monitoring, IDS alerts, and mobile-ready backend outputs.</p>
+    <p>Apple-style workflow dashboard for CAD extraction, AI node planning, RF heatmap validation, live simulation, AI monitoring, IDS alerts, and local backend outputs.</p>
     <div class="workflow-pill">Upload → Extract → Plan → Heatmap → Simulate → AI / IDS → Export</div>
 </div>
 """, unsafe_allow_html=True)
@@ -1340,6 +1411,20 @@ with workflow_tabs[2]:
 # 4. Rooms & Nodes
 # -------------------------------------------------------------------
 with workflow_tabs[3]:
+    st.markdown('<div class="section-title">Hardware Digital Twin Summary</div>', unsafe_allow_html=True)
+    if plan_nodes_list:
+        hardware_rows = _dashboard_build_hardware_rows(plan_nodes_list)
+        if hardware_rows:
+            st.dataframe(hardware_rows, use_container_width=True, hide_index=True)
+            st.caption(
+                "Each planned node is modeled as a physical StructFi unit: Raspberry Pi/OpenWRT, "
+                "directional antenna, PoE power, Cat6 backhaul, wall/corner mounting, and controller-managed roaming."
+            )
+        else:
+            st.info("No hardware digital twin profiles are available for the current plan.")
+    else:
+        st.info("Run AI Planning to generate hardware digital twin profiles for the suggested nodes.")
+
     rooms_col, nodes_col = st.columns([1, 1])
 
     with rooms_col:
@@ -1372,6 +1457,17 @@ with workflow_tabs[3]:
                 projected_clients = capacity.get("projected_clients", capacity_metrics.get("expected_clients", 0))
                 projected_capacity = capacity.get("projected_capacity_mbps", capacity_metrics.get("effective_capacity_mbps", 0))
                 tx_power = node.get("tx_power", node.get("tx_power_dbm", telemetry.get("tx_power_dbm", 0)))
+                hardware = _dashboard_hardware_profile(node)
+                device_type = _dashboard_hw_value(hardware, ["device_type", "physical_node_model"], "Raspberry Pi 4B")
+                firmware = _dashboard_hw_value(hardware, ["firmware"], "OpenWRT")
+                antenna_type = _dashboard_hw_value(hardware, ["antenna_type"], "Directional")
+                antenna_gain = _dashboard_hw_value(hardware, ["antenna_gain_dbi"], "-")
+                poe_standard = _dashboard_hw_value(hardware, ["poe_standard"], "IEEE 802.3af")
+                backhaul_type = _dashboard_hw_value(hardware, ["backhaul_type"], "Cat6 Ethernet")
+                mount_type = _dashboard_hw_value(hardware, ["mount_type"], "Embedded wall/corner node")
+                mount_height = _dashboard_hw_value(hardware, ["mount_height_m"], "-")
+                max_clients = _dashboard_hw_value(hardware, ["max_clients"], "-")
+                power_watts = _dashboard_hw_value(hardware, ["estimated_power_watts"], "-")
                 st.markdown(f"""
                 <div class="node-card">
                     <b>{node_name}</b><br>
@@ -1380,7 +1476,13 @@ with workflow_tabs[3]:
                     TX: {tx_power} dBm | Channel: {node.get("channel", 0)}<br>
                     Beam: {node.get("beam_direction_deg", node.get("antenna_direction", "omni"))}<br>
                     Coverage: {coverage_score} | Clients: {projected_clients} | Capacity: {projected_capacity} Mbps<br>
-                    Placement Score: {node.get("placement_score", 0)}
+                    Placement Score: {node.get("placement_score", 0)}<br><br>
+                    <b>Hardware Digital Twin</b><br>
+                    Device: {device_type} | Firmware: {firmware}<br>
+                    Antenna: {antenna_type} | Gain: {antenna_gain} dBi<br>
+                    PoE: {poe_standard} | Backhaul: {backhaul_type}<br>
+                    Mount: {mount_type} @ {mount_height} m | Max Clients: {max_clients}<br>
+                    Estimated Power: {power_watts} W
                 </div>
                 """, unsafe_allow_html=True)
         else:
@@ -1390,13 +1492,13 @@ with workflow_tabs[3]:
 # 5. Backend / Export
 # -------------------------------------------------------------------
 with workflow_tabs[4]:
-    st.markdown('<div class="section-title">Backend & Mobile Readiness</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-title">Backend / Export</div>', unsafe_allow_html=True)
     st.markdown(f"""
     <div class="export-card">
         <b>Backend base URL</b><br>
         <span class="subtle">{API_URL}</span><br><br>
-        <b>Mobile-ready endpoints</b><br>
-        <span class="subtle">/mobile/bootstrap, /mobile/dashboard, /mobile/images, /mobile/nodes, /mobile/clients, /mobile/alerts</span><br><br>
+        <b>Local development mode</b><br>
+        <span class="subtle">Run the FastAPI backend locally with: uvicorn app.main:app --reload</span><br><br>
         <b>Router / Security endpoints</b><br>
         <span class="subtle">/router/config, /network/vlans, /network/ssids, /security/policies, /ids/rules</span>
     </div>
