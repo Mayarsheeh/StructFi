@@ -19,6 +19,38 @@ class ClientModel(BaseModel):
     name: str
     role: Literal["management", "staff", "guest"]
 
+    # Sprint 6 client and traffic profile fields.
+    # role remains the security/segmentation role, while client_type and
+    # traffic_profile describe the realistic user/device behavior.
+    client_type: Literal[
+        "admin",
+        "staff",
+        "guest",
+        "call_center_agent",
+        "meeting_user",
+        "iot_sensor",
+        "maintenance",
+    ] = "staff"
+    traffic_profile: Literal[
+        "network_admin",
+        "web_cloud",
+        "guest_browsing",
+        "voip",
+        "video_call",
+        "iot_telemetry",
+        "maintenance_tools",
+    ] = "web_cloud"
+    vlan_id: int = 20
+    ssid: str = "StructFi-Staff"
+    qos_priority: Literal["low", "normal", "high", "critical"] = "normal"
+    required_bandwidth_mbps: float = 5.0
+    max_latency_ms: float = 150.0
+    packet_loss_tolerance_pct: float = 5.0
+    mobility_pattern: Literal["stationary", "slow_walk", "walk", "roaming", "iot_static"] = "walk"
+    handover_threshold_dbm: float = -67.0
+    sticky_client: bool = False
+    qos_state: Literal["not_evaluated", "ok", "warning", "violated"] = "not_evaluated"
+
     x: float
     y: float
     floor: str = "unknown"
@@ -39,6 +71,8 @@ class ClientModel(BaseModel):
     current_retry_rate_pct: float = 0.0
     current_latency_ms: float = 0.0
     roaming_count: int = 0
+    handover_latency_ms: float = 0.0
+    last_handover_status: Literal["none", "fast", "slow", "failed"] = "none"
     packets_sent: int = 0
     packets_received: int = 0
 

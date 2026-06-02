@@ -5,6 +5,9 @@ import math
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from app.services.rf_engine import RFPropagationEngine
+from app.services.wall_materials import WallMaterialManager
+
 
 class AdvancedCADPlanner:
     """
@@ -70,6 +73,15 @@ class AdvancedCADPlanner:
         self.service_beamwidth_deg = 65.0
 
         self.channels_5ghz = [36, 40, 44, 48, 149, 153, 157, 161]
+        self.wall_material_manager = WallMaterialManager()
+        material_config = self.wall_material_manager.current_config()
+        self.rf_engine = RFPropagationEngine(
+            reference_rssi_dbm=self.reference_rssi_dbm,
+            reference_tx_power_dbm=self.reference_tx_power_dbm,
+            noise_floor_dbm=self.noise_floor_dbm,
+            frequency_ghz=5.0,
+            default_material=material_config.get("default_material", "reinforced_concrete"),
+        )
 
     # ------------------------------------------------------------------
     # Public API / compatibility with main.py
@@ -132,7 +144,13 @@ class AdvancedCADPlanner:
 
     def plan_building(self, building: Dict[str, Any]) -> Dict[str, Any]:
         rooms = self._normalize_rooms(list(building.get("rooms", [])))
-        walls = list(building.get("walls", []))
+        material_config = self.wall_material_manager.current_config()
+        self.rf_engine.default_material = material_config.get("default_material", self.rf_engine.default_material)
+        walls = self.wall_material_manager.apply_to_walls(list(building.get("walls", [])), material_config)
+        building = dict(building)
+        building["walls"] = walls
+        building["wall_material_config"] = material_config
+        building["wall_material_summary"] = self.wall_material_manager.summarize_walls(walls)
         bounds = dict(building.get("bounds", {}))
         labels = list(building.get("labels", []))
 
@@ -190,6 +208,8 @@ class AdvancedCADPlanner:
             "nodes": nodes,
             "walls": walls,
             "labels": labels,
+            "wall_material_config": material_config,
+            "wall_material_summary": building.get("wall_material_summary", {}),
             "cable_routes": self._build_cable_routes(nodes, building),
             "ssid_profiles": ssid_profiles,
             "vlan_plan": vlan_plan,
@@ -204,6 +224,18 @@ class AdvancedCADPlanner:
                 "placement_rule": "Every non-bathroom room gets at least one corner-based directional node.",
                 "bathroom_rule": "Bathrooms get no node and are covered from corridor/nearest node.",
                 "corridor_rule": "Corridors are planned as backbone coverage zones.",
+                "rf_model_rule": "RSSI/SNR are estimated from log-distance path loss, wall/material attenuation, directional antenna gain, and noise floor.",
+            },
+            "rf_assumptions": self.rf_engine.assumptions(),
+            "material_assumptions": {
+                "profile": material_config.get("name", material_config.get("profile_key", "unknown")),
+                "profile_key": material_config.get("profile_key", "unknown"),
+                "description": material_config.get("description", ""),
+                "default_material": material_config.get("default_material", "unknown"),
+                "interior_wall_material": material_config.get("interior_wall_material", "unknown"),
+                "facade_material": material_config.get("facade_material", "unknown"),
+                "window_material": material_config.get("window_material", "unknown"),
+                "door_material": material_config.get("door_material", "unknown"),
             },
             "status": "ok",
         }
@@ -568,44 +600,71 @@ class AdvancedCADPlanner:
                 continue
 
             samples = self._sample_points_in_room(room, target_count=36)
-            rssis = []
-            snrs = []
+            rssis: List[float] = []
+            snrs: List[float] = []
+            path_losses: List[float] = []
+            wall_losses: List[float] = []
+            directional_gains: List[float] = []
+            wall_counts: List[int] = []
+            material_counts: Dict[str, int] = {}
+
+            hardware = node.get("hardware_profile", {}) if isinstance(node.get("hardware_profile"), dict) else {}
+            antenna_gain = float(hardware.get("antenna_gain_dbi", 8.0) or 8.0)
+            channel_width = int(hardware.get("channel_width_mhz", 40) or 40)
 
             for sx, sy in samples:
-                angle_penalty = self._directional_angle_penalty(
+                wall_segments = self._walls_between_segments(node["x"], node["y"], sx, sy, walls)
+                rf_link = self.rf_engine.estimate_link(
                     node_x=node["x"],
                     node_y=node["y"],
                     target_x=sx,
                     target_y=sy,
+                    tx_power_dbm=node["tx_power_dbm"],
                     beam_direction_deg=node["beam_direction_deg"],
                     beamwidth_deg=node["beamwidth_deg"],
-                )
-
-                distance = max(math.hypot(sx - node["x"], sy - node["y"]), 0.5)
-                wall_count = self._count_walls_between(node["x"], node["y"], sx, sy, walls)
-
-                rssi = self._predict_rssi(
-                    distance_m=distance,
-                    tx_power_dbm=node["tx_power_dbm"],
-                    wall_count=wall_count,
                     room_type=self._room_type(room),
-                    angle_penalty_db=angle_penalty,
+                    wall_count=len(wall_segments),
+                    wall_segments=wall_segments,
+                    antenna_gain_dbi=antenna_gain,
+                    interference_penalty_db=0.0,
                 )
-                snr = rssi - self.noise_floor_dbm
 
-                rssis.append(rssi)
-                snrs.append(snr)
+                rssis.append(rf_link.rssi_dbm)
+                snrs.append(rf_link.snr_db)
+                path_losses.append(rf_link.path_loss_db)
+                wall_losses.append(rf_link.wall_loss_db)
+                directional_gains.append(rf_link.directional_gain_db)
+                wall_counts.append(rf_link.wall_count)
+                material_counts[rf_link.wall_material] = material_counts.get(rf_link.wall_material, 0) + 1
 
             avg_rssi = sum(rssis) / max(len(rssis), 1)
             worst_rssi = min(rssis) if rssis else -95.0
             avg_snr = sum(snrs) / max(len(snrs), 1)
             coverage_ratio = sum(1 for rssi in rssis if rssi >= self.minimum_acceptable_rssi_dbm) / max(len(rssis), 1)
+            avg_path_loss = sum(path_losses) / max(len(path_losses), 1)
+            avg_wall_loss = sum(wall_losses) / max(len(wall_losses), 1)
+            avg_directional_gain = sum(directional_gains) / max(len(directional_gains), 1)
+            avg_wall_count = sum(wall_counts) / max(len(wall_counts), 1)
 
             expected_clients = int(room.get("expected_clients", 1))
             capacity = self._estimate_capacity(room, avg_rssi, avg_snr, expected_clients)
-            packet_loss = self._estimate_packet_loss(avg_rssi, avg_snr, capacity["utilization_percent"])
+            packet_loss = self.rf_engine.estimate_packet_loss_percent(
+                rssi_dbm=avg_rssi,
+                snr_db=avg_snr,
+                utilization_percent=capacity["utilization_percent"],
+                interference_score=0.0,
+            )
             latency = self._estimate_latency_ms(avg_snr, capacity["utilization_percent"])
-            throughput = self._estimate_throughput_mbps(avg_rssi, avg_snr, capacity["utilization_percent"])
+            throughput = self.rf_engine.estimate_throughput_mbps(
+                rssi_dbm=avg_rssi,
+                snr_db=avg_snr,
+                utilization_percent=capacity["utilization_percent"],
+                channel_width_mhz=channel_width,
+                base_capacity_mbps=self.base_node_capacity_mbps,
+            )
+
+            assumptions = self.rf_engine.assumptions()
+            dominant_material = max(material_counts, key=material_counts.get) if material_counts else assumptions["default_wall_material"]
 
             node["coverage_metrics"] = {
                 "sample_points": len(samples),
@@ -616,6 +675,33 @@ class AdvancedCADPlanner:
                 "avg_snr_db": round(avg_snr, 2),
                 "target_rssi_dbm": self.target_room_rssi_dbm,
                 "minimum_acceptable_rssi_dbm": self.minimum_acceptable_rssi_dbm,
+                "rf_model": "log_distance_wall_directional",
+                "frequency_ghz": assumptions["frequency_ghz"],
+                "noise_floor_dbm": assumptions["noise_floor_dbm"],
+                "avg_path_loss_db": round(avg_path_loss, 2),
+                "avg_wall_loss_db": round(avg_wall_loss, 2),
+                "avg_wall_count": round(avg_wall_count, 2),
+                "avg_directional_gain_db": round(avg_directional_gain, 2),
+                "default_wall_material": assumptions["default_wall_material"],
+                "default_wall_attenuation_db": assumptions["default_wall_attenuation_db"],
+                "dominant_wall_material": dominant_material,
+                "material_breakdown": material_counts,
+                "interference_penalty_db": 0.0,
+                "rf_model_note": assumptions["note"],
+            }
+
+            node["rf_profile"] = {
+                "model": assumptions["model"],
+                "frequency_ghz": assumptions["frequency_ghz"],
+                "noise_floor_dbm": assumptions["noise_floor_dbm"],
+                "default_wall_material": assumptions["default_wall_material"],
+                "default_wall_attenuation_db": assumptions["default_wall_attenuation_db"],
+                "dominant_wall_material": dominant_material,
+                "avg_path_loss_db": round(avg_path_loss, 2),
+                "avg_wall_loss_db": round(avg_wall_loss, 2),
+                "avg_directional_gain_db": round(avg_directional_gain, 2),
+                "avg_wall_count": round(avg_wall_count, 2),
+                "model_note": assumptions["note"],
             }
 
             node["capacity_metrics"] = capacity
@@ -631,6 +717,9 @@ class AdvancedCADPlanner:
                 "estimated_power_watts": self._estimate_power_watts(node["tx_power_dbm"]),
                 "temperature_c": self._estimate_node_temperature(capacity["utilization_percent"]),
                 "humidity_percent": self._estimate_humidity(room),
+                "rf_model": "log_distance_wall_directional",
+                "avg_path_loss_db": round(avg_path_loss, 2),
+                "avg_wall_loss_db": round(avg_wall_loss, 2),
             }
 
         return nodes
@@ -643,27 +732,28 @@ class AdvancedCADPlanner:
         room_type: str,
         angle_penalty_db: float,
     ) -> float:
-        distance_m = max(distance_m, 0.5)
+        """
+        Compatibility helper for placement scoring.
 
-        if room_type == "corridor":
-            exponent = self.path_loss_exponent_corridor
-        elif wall_count > 0:
-            exponent = self.path_loss_exponent_obstructed
-        else:
-            exponent = self.path_loss_exponent_room
-
-        path_loss = 10.0 * exponent * math.log10(distance_m)
-        wall_loss = wall_count * self.wall_loss_db
-
-        rssi = (
-            self.reference_rssi_dbm
-            + (tx_power_dbm - self.reference_tx_power_dbm)
-            - path_loss
-            - wall_loss
-            - angle_penalty_db
+        The detailed RF model is applied in _attach_coverage_and_telemetry,
+        but this method is kept for older scoring logic and now uses the
+        same RFPropagationEngine assumptions.
+        """
+        rf_link = self.rf_engine.estimate_link(
+            node_x=0.0,
+            node_y=0.0,
+            target_x=max(float(distance_m), 0.5),
+            target_y=0.0,
+            tx_power_dbm=tx_power_dbm,
+            beam_direction_deg=0.0,
+            beamwidth_deg=360.0,
+            room_type=room_type,
+            wall_count=wall_count,
+            wall_segments=None,
+            antenna_gain_dbi=8.0,
+            interference_penalty_db=angle_penalty_db,
         )
-
-        return max(-95.0, min(-35.0, rssi))
+        return rf_link.rssi_dbm
 
     def _fit_tx_power_for_room(
         self,
@@ -991,6 +1081,10 @@ class AdvancedCADPlanner:
                 "nearby_overlap_score": round(float(node.get("overlap_score", 0.0) or 0.0), 2),
                 "estimated_rssi_center": round(float(coverage_metrics.get("avg_rssi_dbm", telemetry.get("rssi_dbm", -65.0))), 2),
                 "estimated_snr_center": round(float(coverage_metrics.get("avg_snr_db", telemetry.get("snr_db", 25.0))), 2),
+                "avg_path_loss_db": round(float(coverage_metrics.get("avg_path_loss_db", 0.0) or 0.0), 2),
+                "avg_wall_loss_db": round(float(coverage_metrics.get("avg_wall_loss_db", 0.0) or 0.0), 2),
+                "avg_directional_gain_db": round(float(coverage_metrics.get("avg_directional_gain_db", 0.0) or 0.0), 2),
+                "rf_model": coverage_metrics.get("rf_model", "log_distance_wall_directional"),
             }
             node["capacity"] = {
                 "projected_clients": int(capacity_metrics.get("expected_clients", telemetry.get("connected_clients", 0)) or 0),
@@ -1160,6 +1254,9 @@ class AdvancedCADPlanner:
         loss_values = [float(n.get("telemetry", {}).get("packet_loss_percent", 10.0)) for n in nodes]
         throughput_values = [float(n.get("telemetry", {}).get("throughput_mbps", 0.0)) for n in nodes]
         utilization_values = [float(n.get("capacity_metrics", {}).get("utilization_percent", 0.0)) for n in nodes]
+        path_loss_values = [float(n.get("rf_profile", {}).get("avg_path_loss_db", n.get("coverage_metrics", {}).get("avg_path_loss_db", 0.0))) for n in nodes]
+        wall_loss_values = [float(n.get("rf_profile", {}).get("avg_wall_loss_db", n.get("coverage_metrics", {}).get("avg_wall_loss_db", 0.0))) for n in nodes]
+        directional_gain_values = [float(n.get("rf_profile", {}).get("avg_directional_gain_db", n.get("coverage_metrics", {}).get("avg_directional_gain_db", 0.0))) for n in nodes]
 
         bathrooms = [r for r in rooms if self._room_type(r) == "bathroom"]
         corridors = [r for r in rooms if self._room_type(r) == "corridor"]
@@ -1188,6 +1285,9 @@ class AdvancedCADPlanner:
         avg_loss = sum(loss_values) / max(len(loss_values), 1)
         avg_throughput = sum(throughput_values) / max(len(throughput_values), 1)
         avg_utilization = sum(utilization_values) / max(len(utilization_values), 1)
+        avg_path_loss = sum(path_loss_values) / max(len(path_loss_values), 1)
+        avg_wall_loss = sum(wall_loss_values) / max(len(wall_loss_values), 1)
+        avg_directional_gain = sum(directional_gain_values) / max(len(directional_gain_values), 1)
 
         target_met = (
             avg_coverage >= 95.0
@@ -1242,6 +1342,11 @@ class AdvancedCADPlanner:
             "avg_packet_loss_percent": round(avg_loss, 2),
             "avg_throughput_mbps": round(avg_throughput, 2),
             "avg_utilization_percent": round(avg_utilization, 2),
+            "avg_path_loss_db": round(avg_path_loss, 2),
+            "avg_wall_loss_db": round(avg_wall_loss, 2),
+            "avg_directional_gain_db": round(avg_directional_gain, 2),
+            "rf_model": "log_distance_wall_directional",
+            "rf_assumption_note": "RSSI/SNR values are simulation estimates based on distance, wall attenuation, antenna direction, and noise floor.",
             "missing_node_rooms": missing_node_rooms,
             "degraded_nodes": degraded_nodes,
             "warnings": warnings,
@@ -1630,19 +1735,28 @@ class AdvancedCADPlanner:
 
         return self.default_beamwidth_deg
 
-    def _count_walls_between(self, x1: float, y1: float, x2: float, y2: float, walls: List[Dict[str, Any]]) -> int:
-        count = 0
+    def _walls_between_segments(self, x1: float, y1: float, x2: float, y2: float, walls: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        crossed: List[Dict[str, Any]] = []
 
         for wall in walls:
-            wx1 = float(wall.get("x1", 0.0))
-            wy1 = float(wall.get("y1", 0.0))
-            wx2 = float(wall.get("x2", 0.0))
-            wy2 = float(wall.get("y2", 0.0))
+            try:
+                wx1 = float(wall.get("x1", 0.0))
+                wy1 = float(wall.get("y1", 0.0))
+                wx2 = float(wall.get("x2", 0.0))
+                wy2 = float(wall.get("y2", 0.0))
+            except Exception:
+                continue
 
             if self._segments_intersect(x1, y1, x2, y2, wx1, wy1, wx2, wy2):
-                count += 1
+                crossed.append(wall)
 
-        return min(count, 6)
+            if len(crossed) >= 6:
+                break
+
+        return crossed
+
+    def _count_walls_between(self, x1: float, y1: float, x2: float, y2: float, walls: List[Dict[str, Any]]) -> int:
+        return len(self._walls_between_segments(x1, y1, x2, y2, walls))
 
     def _segments_intersect(
         self,

@@ -45,6 +45,7 @@ from app.services.floorplan_manager import FloorplanManager
 from app.services.dxf_room_extractor import DXFRoomExtractor
 from app.services.advanced_cad_planner import AdvancedCADPlanner
 from app.services.cad_visualizer import CADVisualizer
+from app.services.wall_materials import WallMaterialManager
 from app.services.cad_file_manager import CADFileManager
 from app.services.runtime_reset import RuntimeResetService
 
@@ -87,6 +88,7 @@ advanced_cad_planner = AdvancedCADPlanner()
 cad_visualizer = CADVisualizer()
 cad_file_manager = CADFileManager()
 runtime_reset_service = RuntimeResetService()
+wall_material_manager = WallMaterialManager()
 ids_engine = IDSEngine() if IDSEngine else None
 security_engine = SecurityEngine() if SecurityEngine else None
 
@@ -107,6 +109,18 @@ class AccessCheckRequest(BaseModel):
 
 class MobileClientConfig(BaseModel):
     base_url: Optional[str] = None
+
+
+class WallMaterialConfigRequest(BaseModel):
+    profile: Optional[str] = None
+    profile_key: Optional[str] = None
+    default_material: Optional[str] = None
+    interior_wall_material: Optional[str] = None
+    facade_material: Optional[str] = None
+    door_material: Optional[str] = None
+    window_material: Optional[str] = None
+    structural_wall_material: Optional[str] = None
+    custom_overrides: Dict[str, Any] = {}
 
 
 # -------------------------------------------------------------------
@@ -740,6 +754,46 @@ def ai_config():
     }
 
 
+
+def _build_dashboard_report_state() -> Dict[str, Any]:
+    """
+    Build one comprehensive snapshot for dashboard-generated reports.
+
+    The report must represent the current simulation experiment: latest CAD,
+    extracted rooms, suggested nodes, RF/material assumptions, runtime clients,
+    controller decisions, alerts, handover events, telemetry, and images.
+    """
+    state = _state_dict()
+    latest_plan = _unwrap_plan_payload(_get_latest_plan_model_or_dict()) or {}
+    latest_building = _latest_building_dict() or {}
+
+    try:
+        wall_config = wall_material_manager.current_config()
+    except Exception:
+        wall_config = {}
+
+    try:
+        material_library = wall_material_manager.MATERIAL_LIBRARY
+    except Exception:
+        material_library = {}
+
+    return {
+        "simulation_state": state,
+        "latest_plan": latest_plan,
+        "latest_building": latest_building,
+        "latest_cad": cad_file_manager.get_latest_cad(),
+        "wall_material_config": wall_config,
+        "material_library": material_library,
+        "project_config": _project_config_payload(),
+        "images": _current_images(),
+        "export_context": {
+            "source": "StructFi dashboard",
+            "mode": "local_simulation_run",
+            "note": "Generated from the current dashboard/backend state for this simulation experiment.",
+        },
+    }
+
+
 # -------------------------------------------------------------------
 # Export
 # -------------------------------------------------------------------
@@ -747,7 +801,7 @@ def ai_config():
 @app.get("/export/excel")
 def export_excel():
     try:
-        path = reporter.export_excel(simulator.get_state())
+        path = reporter.export_excel(_build_dashboard_report_state())
         return FileResponse(
             path,
             media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -760,7 +814,7 @@ def export_excel():
 @app.get("/export/pdf")
 def export_pdf():
     try:
-        path = reporter.export_pdf(simulator.get_state())
+        path = reporter.export_pdf(_build_dashboard_report_state())
         return FileResponse(
             path,
             media_type="application/pdf",
@@ -905,6 +959,47 @@ def cad_rooms():
         return {"rooms": [], "count": 0}
     rooms = building.get("rooms", []) or []
     return {"rooms": rooms, "count": len(rooms)}
+
+
+
+
+# -------------------------------------------------------------------
+# RF material assumptions
+# -------------------------------------------------------------------
+
+@app.get("/rf/material-profiles")
+def get_rf_material_profiles():
+    return wall_material_manager.profiles_payload()
+
+
+@app.get("/rf/material-config")
+def get_rf_material_config():
+    return {
+        "config": wall_material_manager.current_config(),
+        "profiles": wall_material_manager.SCENARIO_PROFILES,
+        "materials": wall_material_manager.MATERIAL_LIBRARY,
+    }
+
+
+@app.post("/rf/material-config")
+def set_rf_material_config(request: WallMaterialConfigRequest):
+    payload = request.model_dump(exclude_none=True) if hasattr(request, "model_dump") else request.dict(exclude_none=True)
+    config = wall_material_manager.save_config(payload)
+    apply_result = wall_material_manager.apply_to_latest_building(config)
+    return {
+        "message": "RF wall/material configuration saved",
+        "config": config,
+        "apply_result": apply_result,
+    }
+
+
+@app.post("/rf/apply-material-config")
+def apply_rf_material_config():
+    apply_result = wall_material_manager.apply_to_latest_building()
+    return {
+        "message": "RF wall/material configuration applied to latest building",
+        "apply_result": apply_result,
+    }
 
 
 # -------------------------------------------------------------------

@@ -6,6 +6,9 @@ import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from app.services.rf_engine import RFPropagationEngine
+from app.services.wall_materials import WallMaterialManager
+
 os.environ["MPLBACKEND"] = "Agg"
 
 import matplotlib
@@ -35,6 +38,8 @@ class CADVisualizer:
 
         self.latest_building_path = self.parsed_dir / "latest_building.json"
         self.latest_plan_path = self.parsed_dir / "latest_plan.json"
+        self.rf_engine = RFPropagationEngine()
+        self.wall_material_manager = WallMaterialManager()
 
     # ------------------------------------------------------------------
     # Public API expected by app/main.py
@@ -536,7 +541,7 @@ class CADVisualizer:
         )
 
         cbar = ax.figure.colorbar(image, ax=ax, fraction=0.026, pad=0.012)
-        cbar.set_label("Coverage Quality", fontsize=8)
+        cbar.set_label("Calibrated RF Quality (RSSI/SNR + Design Margin)", fontsize=8)
         cbar.ax.tick_params(labelsize=7)
 
     def _prepare_nodes(self, plan: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -570,6 +575,7 @@ class CADVisualizer:
                 or 80.0
             )
 
+            hardware = node.get("hardware_profile", {}) if isinstance(node.get("hardware_profile"), dict) else {}
             prepared.append(
                 {
                     "x": float(x),
@@ -578,6 +584,8 @@ class CADVisualizer:
                     "tx_power": tx_power,
                     "direction": direction,
                     "beamwidth": beamwidth,
+                    "antenna_gain_dbi": float(hardware.get("antenna_gain_dbi", 8.0) or 8.0),
+                    "channel_width_mhz": int(hardware.get("channel_width_mhz", 40) or 40),
                 }
             )
 
@@ -590,10 +598,22 @@ class CADVisualizer:
         nodes: List[Dict[str, Any]],
         room: Dict[str, Any],
     ) -> float:
-        combined_power_mw = 0.0
+        """
+        Point-based calibrated RF quality for the heatmap.
 
+        The previous heatmap combined all received powers, which could make most
+        rooms appear solid green whenever every room had a planned node. This
+        version evaluates each grid point using the strongest practical link,
+        then applies planning margins for indoor fading, room size, antenna
+        effective radius, beam alignment, and room-boundary transitions.
+        """
         point_room_id = room.get("id")
         point_room_type = str(room.get("room_type", "unknown")).lower()
+        material_config = self.wall_material_manager.current_config()
+        default_material = material_config.get("default_material", self.rf_engine.default_material)
+        interior_material = material_config.get("interior_wall_material", default_material)
+
+        adjusted_links: List[Tuple[float, float, Any]] = []
 
         for node in nodes:
             nx = float(node["x"])
@@ -601,61 +621,206 @@ class CADVisualizer:
             tx_power = float(node["tx_power"])
             direction = float(node["direction"])
             beamwidth = max(float(node["beamwidth"]), 25.0)
+            antenna_gain = float(node.get("antenna_gain_dbi", 8.0) or 8.0)
 
-            distance = max(0.45, math.hypot(x - nx, y - ny))
+            distance = max(0.5, math.hypot(x - nx, y - ny))
+            same_room = point_room_id is not None and node.get("room_id") == point_room_id
+            wall_count = 0 if same_room else self._estimated_room_barriers(distance, point_room_type)
+            heatmap_wall_material = default_material if same_room else interior_material
 
-            if point_room_type == "corridor":
-                exp = 1.90
-            elif point_room_type in ["open_area", "reception", "meeting"]:
-                exp = 2.08
-            else:
-                exp = 2.30
+            rf_link = self.rf_engine.estimate_link(
+                node_x=nx,
+                node_y=ny,
+                target_x=x,
+                target_y=y,
+                tx_power_dbm=tx_power,
+                beam_direction_deg=direction,
+                beamwidth_deg=beamwidth,
+                room_type=point_room_type,
+                wall_count=wall_count,
+                wall_segments=None,
+                antenna_gain_dbi=antenna_gain,
+                default_material=heatmap_wall_material,
+                interference_penalty_db=0.0,
+            )
 
-            rssi = -39.0 + (tx_power - 15.0) - (10.0 * exp * math.log10(distance))
+            # Planning calibration margin: indoor Wi-Fi surveys usually design
+            # against fades, furniture, people, client-device variability, and
+            # antenna mounting imperfections. Without this margin, simulated
+            # RSSI can look unrealistically green everywhere.
+            design_margin_db = self._heatmap_design_margin_db(
+                distance_m=distance,
+                room=room,
+                node=node,
+                same_room=same_room,
+            )
+            radius_penalty_db = self._effective_radius_penalty_db(distance, node, room)
+            beam_penalty_db = self._beam_alignment_penalty_db(x, y, node)
+            local_shadow_db = self._local_shadowing_penalty_db(x, y, room)
 
-            angle = math.degrees(math.atan2(y - ny, x - nx))
-            delta = abs((angle - direction + 180.0) % 360.0 - 180.0)
-            half = beamwidth / 2.0
+            calibrated_rssi = (
+                rf_link.rssi_dbm
+                - design_margin_db
+                - radius_penalty_db
+                - beam_penalty_db
+                - local_shadow_db
+            )
+            calibrated_snr = calibrated_rssi - rf_link.noise_floor_dbm
+            adjusted_links.append((calibrated_rssi, calibrated_snr, rf_link))
 
-            if delta <= half:
-                antenna_adjustment = 4.5
-            elif delta <= beamwidth:
-                antenna_adjustment = 0.0
-            else:
-                antenna_adjustment = -7.5
+        if not adjusted_links:
+            return 0.0
 
-            rssi += antenna_adjustment
+        adjusted_links.sort(key=lambda item: item[0], reverse=True)
+        best_rssi, best_snr, _best_link = adjusted_links[0]
 
-            if point_room_id is not None and node.get("room_id") == point_room_id:
-                rssi += 2.0
-            else:
-                rssi -= 8.5
+        # Small diversity benefit if another node is close enough, but do not
+        # sum all AP powers. Summing every node made the map look overly green.
+        diversity_bonus = 0.0
+        if len(adjusted_links) > 1:
+            second_rssi = adjusted_links[1][0]
+            if second_rssi >= best_rssi - 6.0:
+                diversity_bonus = 0.045
+            elif second_rssi >= best_rssi - 10.0:
+                diversity_bonus = 0.025
 
-            # Convert dBm to mW to combine multiple nodes naturally.
-            combined_power_mw += 10 ** (rssi / 10.0)
-
-        if combined_power_mw <= 0:
-            combined_rssi = -95.0
-        else:
-            combined_rssi = 10.0 * math.log10(combined_power_mw)
-
-        # Better visual scale:
-        # -82 = very weak
-        # -72 = weak
-        # -64 = usable
-        # -56 = good
-        # -48 = excellent
-        quality = (combined_rssi + 82.0) / 34.0
-        quality = max(0.0, min(1.0, quality))
-
-        # Keep natural gradual variation instead of flat green rooms.
-        quality = quality ** 1.12
-
-        # Add very small room-edge fading so each room feels gradual, not like one solid block.
-        edge_factor = self._room_edge_gradient_factor(x, y, room)
-        quality = quality * edge_factor
+        quality = self._rssi_snr_to_heatmap_quality(best_rssi, best_snr) + diversity_bonus
+        quality *= self._room_edge_gradient_factor(x, y, room)
 
         return max(0.0, min(1.0, quality))
+
+    def _rssi_snr_to_heatmap_quality(self, rssi_dbm: float, snr_db: float) -> float:
+        """Map calibrated RSSI/SNR into visual quality bands.
+
+        Bands are intentionally stricter than raw simulated RSSI:
+        - >= -55 dBm: excellent
+        - around -60 dBm: good
+        - around -67 dBm: usable/target edge
+        - around -72 dBm: weak
+        - <= -82 dBm: very poor
+        """
+        rssi = float(rssi_dbm)
+        bands = [
+            (-95.0, 0.00),
+            (-82.0, 0.08),
+            (-75.0, 0.22),
+            (-72.0, 0.34),
+            (-67.0, 0.55),
+            (-60.0, 0.76),
+            (-55.0, 0.90),
+            (-45.0, 1.00),
+        ]
+
+        if rssi <= bands[0][0]:
+            quality = bands[0][1]
+        elif rssi >= bands[-1][0]:
+            quality = bands[-1][1]
+        else:
+            quality = 0.0
+            for (x0, q0), (x1, q1) in zip(bands, bands[1:]):
+                if x0 <= rssi <= x1:
+                    t = (rssi - x0) / max(x1 - x0, 1e-9)
+                    quality = q0 + (q1 - q0) * t
+                    break
+
+        # SNR correction keeps strong RSSI but noisy links from looking perfect.
+        if snr_db < 18:
+            quality *= 0.68
+        elif snr_db < 25:
+            quality *= 0.86
+        elif snr_db > 35:
+            quality = min(1.0, quality + 0.035)
+
+        return max(0.0, min(1.0, quality))
+
+    def _heatmap_design_margin_db(
+        self,
+        *,
+        distance_m: float,
+        room: Dict[str, Any],
+        node: Dict[str, Any],
+        same_room: bool,
+    ) -> float:
+        """Indoor fade/design margin used only for visual RF planning.
+
+        This prevents the simulation from treating ideal line-of-sight values as
+        guaranteed real deployment values. Larger rooms and non-same-room links
+        receive a stronger margin.
+        """
+        room_type = str(room.get("room_type", "unknown")).lower()
+        area = max(float(room.get("area", 0.0) or 0.0), 1.0)
+        margin = 7.5
+
+        if distance_m > 4.0:
+            margin += min(5.0, (distance_m - 4.0) * 0.55)
+        if area > 30.0:
+            margin += min(4.0, (area - 30.0) / 30.0)
+        if not same_room:
+            margin += 2.5
+        if room_type in ["call_center", "meeting", "open_area"] or "call" in str(room.get("name", "")).lower():
+            margin += 1.5
+        if room_type in ["storage", "service", "kitchen"]:
+            margin += 0.8
+
+        return margin
+
+    def _effective_radius_penalty_db(self, distance_m: float, node: Dict[str, Any], room: Dict[str, Any]) -> float:
+        """Penalize points outside the realistic effective sector radius."""
+        tx = float(node.get("tx_power", 16.0) or 16.0)
+        gain = float(node.get("antenna_gain_dbi", 8.0) or 8.0)
+        beamwidth = max(float(node.get("beamwidth", 80.0) or 80.0), 25.0)
+        room_type = str(room.get("room_type", "unknown")).lower()
+
+        radius = 4.0
+        radius += max(0.0, tx - 12.0) * 0.22
+        radius += max(0.0, gain - 6.0) * 0.28
+        radius += min(1.2, beamwidth / 120.0)
+
+        if room_type == "corridor":
+            radius *= 1.45
+        elif room_type in ["open_area", "reception", "meeting"]:
+            radius *= 1.15
+        elif room_type in ["storage", "service", "kitchen"]:
+            radius *= 0.82
+
+        if distance_m <= radius:
+            return 0.0
+        return min(12.0, (distance_m - radius) * 1.85)
+
+    def _beam_alignment_penalty_db(self, x: float, y: float, node: Dict[str, Any]) -> float:
+        nx = float(node.get("x", 0.0))
+        ny = float(node.get("y", 0.0))
+        direction = float(node.get("direction", 0.0) or 0.0)
+        beamwidth = max(float(node.get("beamwidth", 80.0) or 80.0), 25.0)
+        angle = math.degrees(math.atan2(y - ny, x - nx))
+        delta = abs((angle - direction + 180.0) % 360.0 - 180.0)
+        half = beamwidth / 2.0
+
+        if delta <= half:
+            return 0.0
+        if delta <= beamwidth:
+            return min(6.0, (delta - half) / max(half, 1.0) * 4.0)
+        return min(14.0, 6.0 + (delta - beamwidth) / 90.0 * 8.0)
+
+    def _local_shadowing_penalty_db(self, x: float, y: float, room: Dict[str, Any]) -> float:
+        """Deterministic tiny variation to avoid perfectly flat colored blocks."""
+        rx = float(room.get("x", 0.0))
+        ry = float(room.get("y", 0.0))
+        rw = max(float(room.get("width", 1.0)), 0.1)
+        rh = max(float(room.get("height", 1.0)), 0.1)
+        nx = (x - rx) / rw
+        ny = (y - ry) / rh
+        wave = math.sin((nx * 7.1 + ny * 3.7) * math.pi) * 0.5 + 0.5
+        return 0.0 + wave * 1.6
+
+    def _estimated_room_barriers(self, distance_m: float, room_type: str) -> int:
+        """Fast barrier estimate for point heatmaps between different rooms."""
+        room_type = str(room_type or "unknown").lower()
+        if room_type == "corridor":
+            return 1
+        if distance_m > 12.0:
+            return 2
+        return 1
 
     def _room_edge_gradient_factor(self, x: float, y: float, room: Dict[str, Any]) -> float:
         rx = float(room.get("x", 0.0))

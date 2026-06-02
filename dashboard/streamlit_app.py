@@ -1,4 +1,6 @@
 import os
+import json
+import time
 
 import requests
 import streamlit as st
@@ -10,15 +12,15 @@ LOCAL_DEFAULT_API_URL = "http://127.0.0.1:8000"
 
 def resolve_api_url() -> str:
     """
-    Resolve the backend API URL for local development.
+    Resolve the backend API URL safely for local development.
 
     Priority:
-    1. Streamlit secrets: API_URL
-    2. Environment variable: STRUCTFI_API_URL or API_URL
+    1. Streamlit secrets: API_URL, when secrets.toml exists
+    2. Environment variables: STRUCTFI_API_URL or API_URL
     3. Local FastAPI backend: http://127.0.0.1:8000
 
-    This keeps the dashboard runnable even when .streamlit/secrets.toml
-    is not available, and it avoids depending on the future mobile app setup.
+    This prevents StreamlitSecretNotFoundError when running locally without
+    a .streamlit/secrets.toml file.
     """
     api_url = None
 
@@ -379,6 +381,10 @@ def reset_simulation():
     return safe_post_json(f"{API_URL}/simulation/reset", default={})
 
 
+def full_project_reset():
+    return safe_post_json(f"{API_URL}/cad/reset", default={})
+
+
 def get_latest_cad():
     return safe_get_json(f"{API_URL}/cad/latest", {"cad": None}).get("cad")
 
@@ -468,47 +474,60 @@ def _dashboard_metric_number(value, default=0):
         return value if value not in [None, ""] else default
 
 
-
-def _dashboard_hardware_profile(node):
-    profile = node.get("hardware_profile", {}) if isinstance(node, dict) else {}
-    return profile if isinstance(profile, dict) else {}
-
-
-def _dashboard_hw_value(profile, keys, default="-"):
-    if not isinstance(profile, dict):
-        return default
-    for key in keys:
-        value = profile.get(key)
-        if value not in [None, ""]:
-            return value
-    return default
-
-
-def _dashboard_build_hardware_rows(nodes):
-    rows = []
-    for idx, node in enumerate(nodes or [], start=1):
-        if not isinstance(node, dict):
+def _dashboard_table_safe_rows(rows):
+    safe_rows = []
+    for row in rows or []:
+        if not isinstance(row, dict):
             continue
-        profile = _dashboard_hardware_profile(node)
+        safe_row = {}
+        for key, value in row.items():
+            if value is None:
+                safe_row[key] = "-"
+            elif isinstance(value, (dict, list, tuple)):
+                safe_row[key] = json.dumps(value, ensure_ascii=False)
+            else:
+                safe_row[key] = str(value)
+        safe_rows.append(safe_row)
+    return safe_rows
+
+
+def _dashboard_build_client_profile_rows(clients):
+    rows = []
+    for client in clients or []:
+        if not isinstance(client, dict):
+            continue
         rows.append({
-            "Node": node.get("name") or node.get("node_id") or f"Node {idx}",
-            "Room": node.get("room_name", "-"),
-            "Role": node.get("node_role", "room_node"),
-            "Device": _dashboard_hw_value(profile, ["device_type", "physical_node_model"], "Raspberry Pi 4B"),
-            "Firmware": _dashboard_hw_value(profile, ["firmware"], "OpenWRT"),
-            "Antenna": _dashboard_hw_value(profile, ["antenna_type"], "Directional"),
-            "Gain dBi": _dashboard_hw_value(profile, ["antenna_gain_dbi"], "-"),
-            "TX dBm": _dashboard_hw_value(profile, ["tx_power_dbm"], node.get("tx_power_dbm", node.get("tx_power", "-"))),
-            "Channel": _dashboard_hw_value(profile, ["channel"], node.get("channel", "-")),
-            "Width MHz": _dashboard_hw_value(profile, ["channel_width_mhz"], "-"),
-            "PoE": _dashboard_hw_value(profile, ["poe_standard"], "IEEE 802.3af"),
-            "Backhaul": _dashboard_hw_value(profile, ["backhaul_type"], "Cat6 Ethernet"),
-            "Mount": _dashboard_hw_value(profile, ["mount_type"], "Embedded wall/corner node"),
-            "Height m": _dashboard_hw_value(profile, ["mount_height_m"], "-"),
-            "Max Clients": _dashboard_hw_value(profile, ["max_clients"], "-"),
-            "Power W": _dashboard_hw_value(profile, ["estimated_power_watts"], "-"),
+            "Client": client.get("name", "-"),
+            "Type": client.get("client_type", client.get("role", "-")),
+            "Role": client.get("role", "-"),
+            "Traffic": client.get("traffic_profile", "-"),
+            "SSID": client.get("ssid", "-"),
+            "VLAN": client.get("vlan_id", "-"),
+            "Priority": client.get("qos_priority", "-"),
+            "Required Mbps": client.get("required_bandwidth_mbps", "-"),
+            "Max Latency ms": client.get("max_latency_ms", "-"),
+            "Loss Tolerance %": client.get("packet_loss_tolerance_pct", "-"),
+            "Mobility": client.get("mobility_pattern", "-"),
+            "Speed m/s": client.get("speed", "-"),
+            "Connected Node": client.get("connected_node", "-"),
+            "Throughput Mbps": client.get("current_throughput_mbps", "-"),
+            "Latency ms": client.get("current_latency_ms", "-"),
+            "Loss %": client.get("current_packet_loss_pct", "-"),
+            "QoS State": client.get("qos_state", "not_evaluated"),
+            "Roaming": client.get("roaming_count", 0),
         })
     return rows
+
+
+def _dashboard_qos_badge(qos_state):
+    state = str(qos_state or "not_evaluated").lower()
+    if state == "ok":
+        return '<span class="status-pill status-ok">QoS OK</span>'
+    if state == "warning":
+        return '<span class="status-pill status-warn">QoS Warning</span>'
+    if state == "violated":
+        return '<span class="status-pill status-bad">QoS Violated</span>'
+    return '<span class="status-pill status-warn">QoS Pending</span>'
 
 def get_excel_export_url():
     return f"{API_URL}/export/excel"
@@ -546,7 +565,7 @@ def render_status_badge(text):
     st.markdown(f'<span class="status-pill {css}">{text}</span>', unsafe_allow_html=True)
 
 
-def render_interactive_plan(building_data, sim_state):
+def render_interactive_plan(building_data, display_sim_state):
     """
     Interactive Simulation Overlay.
 
@@ -561,7 +580,7 @@ def render_interactive_plan(building_data, sim_state):
     rooms = building_data.get("rooms", []) or []
     walls = building_data.get("walls", []) or []
     bounds = building_data.get("bounds", {}) or {}
-    clients = sim_state.get("clients", []) or []
+    clients = display_sim_state.get("clients", []) or []
 
     if not rooms and not walls:
         st.info("No CAD building data available to draw.")
@@ -585,7 +604,7 @@ def render_interactive_plan(building_data, sim_state):
     _draw_dashboard_room_fills(ax, rooms)
     _draw_dashboard_cad_walls(ax, walls)
     _draw_dashboard_room_outlines_and_labels(ax, rooms)
-    _draw_dashboard_planned_nodes(ax, sim_state)
+    _draw_dashboard_planned_nodes(ax, display_sim_state)
     _draw_dashboard_clients(ax, clients)
 
     pad_x = max(width * 0.025, 0.25)
@@ -1048,6 +1067,15 @@ if "plan_img" not in st.session_state:
 if "heatmap_img" not in st.session_state:
     st.session_state.heatmap_img = None
 
+if "simulation_runtime_active" not in st.session_state:
+    st.session_state.simulation_runtime_active = False
+
+if "auto_simulation_enabled" not in st.session_state:
+    st.session_state.auto_simulation_enabled = False
+
+if "auto_simulation_interval" not in st.session_state:
+    st.session_state.auto_simulation_interval = 1.0
+
 
 with st.sidebar:
     st.markdown("## CAD Workflow")
@@ -1065,6 +1093,8 @@ with st.sidebar:
             st.session_state.extracted_img = None
             st.session_state.plan_img = None
             st.session_state.heatmap_img = None
+            st.session_state.simulation_runtime_active = False
+            st.session_state.auto_simulation_enabled = False
             st.success("CAD file uploaded successfully")
             st.rerun()
         else:
@@ -1083,6 +1113,8 @@ with st.sidebar:
                     "url": "/cad/rendered/cad_extract_rooms.png",
                     "kind": "extract_rooms",
                 }
+            st.session_state.simulation_runtime_active = False
+            st.session_state.auto_simulation_enabled = False
             st.success("Rooms extracted")
             st.rerun()
         else:
@@ -1091,7 +1123,9 @@ with st.sidebar:
     if st.button("Run AI Planning", use_container_width=True):
         result = plan_nodes()
         if result.get("result"):
-            st.success("Planning completed")
+            st.session_state.simulation_runtime_active = False
+            st.session_state.auto_simulation_enabled = False
+            st.success("Planning completed. Runtime clients, QoS, and alerts will appear only after applying the plan to simulation.")
             st.rerun()
         else:
             st.error(result.get("detail", "Planning failed"))
@@ -1119,29 +1153,59 @@ with st.sidebar:
     if st.button("Apply CAD Plan to Simulation", use_container_width=True):
         result = apply_plan_to_simulation()
         if result.get("state"):
-            st.success("CAD plan applied to simulation")
+            st.session_state.simulation_runtime_active = True
+            st.success("CAD plan applied to simulation. Runtime client/traffic profiles and QoS telemetry are now enabled.")
             st.rerun()
         else:
             st.error(result.get("detail", "Apply failed"))
 
     if st.button("Next Simulation Step", use_container_width=True):
-        result = next_step()
-        if result.get("step") is not None:
-            st.success("Simulation advanced")
-            st.rerun()
+        if not st.session_state.get("simulation_runtime_active", False):
+            st.warning("Apply the CAD plan to simulation before advancing runtime steps.")
         else:
-            st.error(result.get("detail", "Step failed"))
+            result = next_step()
+            if result.get("step") is not None:
+                st.success("Simulation advanced")
+                st.rerun()
+            else:
+                st.error(result.get("detail", "Step failed"))
+
+    st.markdown("#### Real-Time Playback")
+    st.session_state.auto_simulation_enabled = st.checkbox(
+        "Auto-run simulation steps",
+        value=bool(st.session_state.get("auto_simulation_enabled", False)),
+        help="When enabled, the dashboard advances one simulation tick repeatedly to mimic real-time operation.",
+    )
+    st.session_state.auto_simulation_interval = st.slider(
+        "Step interval (seconds)",
+        min_value=0.5,
+        max_value=3.0,
+        value=float(st.session_state.get("auto_simulation_interval", 1.0)),
+        step=0.5,
+    )
 
     if st.button("Reset Simulation", use_container_width=True):
         result = reset_simulation()
         if result.get("state"):
-            st.session_state.extracted_img = None
-            st.session_state.plan_img = None
-            st.session_state.heatmap_img = None
-            st.success("Simulation reset")
+            st.session_state.simulation_runtime_active = False
+            st.session_state.auto_simulation_enabled = False
+            st.success("Simulation runtime reset. CAD, extracted rooms, plans, and heatmap were kept.")
             st.rerun()
         else:
             st.error(result.get("detail", "Reset failed"))
+
+    if st.button("Full Reset Project", use_container_width=True):
+        result = full_project_reset()
+        if result.get("state") or result.get("message"):
+            st.session_state.extracted_img = None
+            st.session_state.plan_img = None
+            st.session_state.heatmap_img = None
+            st.session_state.simulation_runtime_active = False
+            st.session_state.auto_simulation_enabled = False
+            st.success("Full project reset completed. Upload CAD to start again.")
+            st.rerun()
+        else:
+            st.error(result.get("detail", "Full reset failed"))
 
     st.markdown("---")
     st.markdown("### Export Center")
@@ -1160,16 +1224,35 @@ if not building_data and latest_rooms:
     building_data = latest_rooms
 
 plan_nodes_list = _dashboard_plan_nodes(latest_plan)
-node_runtime = sim_state.get("node_runtime", []) or []
-clients = sim_state.get("clients", []) or []
+node_runtime_raw = sim_state.get("node_runtime", []) or []
+simulation_is_active = bool(st.session_state.get("simulation_runtime_active", False))
 security_state = sim_state.get("security_state", {}) or {}
-alerts = security_state.get("alerts", []) or []
-ai_output = sim_state.get("ai_output", ai_summary) or {}
+
+if simulation_is_active:
+    node_runtime = node_runtime_raw
+    clients = sim_state.get("clients", []) or []
+    alerts = security_state.get("alerts", []) or []
+    ai_output = sim_state.get("ai_output", ai_summary) or {}
+else:
+    node_runtime = []
+    clients = []
+    alerts = []
+    ai_output = ai_summary or {"health_summary": {}, "recommendations": []}
+
 health = ai_output.get("health_summary", {}) or {}
 recommendations = ai_output.get("recommendations", []) or []
 controller_state = sim_state.get("controller_state", {}) or {}
-decisions = controller_state.get("decisions", []) or []
+decisions = (controller_state.get("decisions", []) or []) if simulation_is_active else []
+runtime_events = (sim_state.get("events", []) or []) if simulation_is_active else []
 summary = latest_plan.get("summary", {}) if latest_plan else {}
+
+display_sim_state = dict(sim_state or {})
+if not simulation_is_active:
+    display_sim_state["clients"] = []
+    display_sim_state["node_runtime"] = []
+    display_sim_state["events"] = []
+    display_sim_state["controller_state"] = {"decisions": []}
+    display_sim_state["security_state"] = {"alerts": [], "access_matrix": []}
 
 extracted_rooms_count = len(latest_rooms.get("rooms", [])) if latest_rooms else 0
 suggested_nodes_count = 0
@@ -1296,7 +1379,7 @@ with workflow_tabs[1]:
 
     with top_left:
         st.markdown('<div class="section-title">Interactive Simulation Overlay</div>', unsafe_allow_html=True)
-        render_interactive_plan(building_data, sim_state)
+        render_interactive_plan(building_data, display_sim_state)
 
     with top_right:
         st.markdown('<div class="section-title">Simulation Runtime</div>', unsafe_allow_html=True)
@@ -1305,7 +1388,7 @@ with workflow_tabs[1]:
         st.metric("Step", sim_state.get("step", 0))
         st.metric("Runtime Nodes", len(node_runtime))
         st.metric("Clients", len(clients))
-        st.metric("Telemetry Points", len(sim_state.get("telemetry_history", []) or []))
+        st.metric("Telemetry Points", len(sim_state.get("telemetry_history", []) or []) if simulation_is_active else 0)
         st.markdown('</div>', unsafe_allow_html=True)
 
     st.markdown('<div class="section-title">Runtime Nodes</div>', unsafe_allow_html=True)
@@ -1328,23 +1411,57 @@ with workflow_tabs[1]:
             </div>
             """, unsafe_allow_html=True)
 
-    st.markdown('<div class="section-title">Live Clients</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-title">Live Clients / Traffic Profiles</div>', unsafe_allow_html=True)
     if not clients:
         st.info("No clients yet. Apply the CAD plan to simulation.")
     else:
+        client_rows = _dashboard_build_client_profile_rows(clients)
+        if client_rows:
+            st.dataframe(_dashboard_table_safe_rows(client_rows), width="stretch", hide_index=True)
+
         client_cols = st.columns(2)
         for i, client in enumerate(clients):
             with client_cols[i % 2]:
+                qos_badge = _dashboard_qos_badge(client.get("qos_state", "not_evaluated"))
                 st.markdown(f"""
                 <div class="room-card">
-                    <b>{client.get("name", "Client")}</b><br>
-                    Role: {client.get("role", "staff")}<br>
+                    <b>{client.get("name", "Client")}</b> {qos_badge}<br>
+                    Type: {client.get("client_type", client.get("role", "staff"))} | Role: {client.get("role", "staff")}<br>
+                    Traffic: {client.get("traffic_profile", "-")} | Priority: {client.get("qos_priority", "-")}<br>
+                    SSID: {client.get("ssid", "-")} | VLAN: {client.get("vlan_id", "-")}<br>
+                    Required: {client.get("required_bandwidth_mbps", "-")} Mbps | Max Latency: {client.get("max_latency_ms", "-")} ms | Loss Tol.: {client.get("packet_loss_tolerance_pct", "-")}%<br>
+                    Mobility: {client.get("mobility_pattern", "-")} | Speed: {client.get("speed", 0)} m/s<br>
                     Position: ({round(float(client.get("x", 0)), 2)}, {round(float(client.get("y", 0)), 2)})<br>
                     Connected Node: {client.get("connected_node", "-")}<br>
                     RSSI: {client.get("current_rssi", "-")} dBm | SNR: {client.get("current_snr", "-")} dB<br>
-                    Throughput: {client.get("current_throughput_mbps", 0)} Mbps | Roaming: {client.get("roaming_count", 0)}
+                    Throughput: {client.get("current_throughput_mbps", 0)} Mbps | Latency: {client.get("current_latency_ms", 0)} ms | Loss: {client.get("current_packet_loss_pct", 0)}%<br>
+                    Roaming: {client.get("roaming_count", 0)} | Last Handover: {client.get("handover_latency_ms", 0)} ms / {client.get("last_handover_status", "none")}
                 </div>
                 """, unsafe_allow_html=True)
+
+    st.markdown('<div class="section-title">Recent Simulation Events / Handover Timeline</div>', unsafe_allow_html=True)
+    if not runtime_events:
+        st.info("No runtime events yet. Apply the CAD plan and advance simulation steps to observe movement, handover, and QoS behavior.")
+    else:
+        for event in list(runtime_events)[-8:][::-1]:
+            metadata = event.get("metadata", {}) if isinstance(event, dict) else {}
+            extra = ""
+            if isinstance(metadata, dict) and metadata:
+                handover_latency = metadata.get("handover_latency_ms")
+                speed = metadata.get("client_speed_mps")
+                status = metadata.get("status")
+                if handover_latency is not None:
+                    extra += f"<br>Handover Latency: {handover_latency} ms"
+                if speed is not None:
+                    extra += f" | Speed: {speed} m/s"
+                if status is not None:
+                    extra += f" | Status: {status}"
+            st.markdown(f"""
+            <div class="room-card">
+                <b>{str(event.get('type', 'event')).upper()}</b> - {event.get('severity', 'info')}<br>
+                {event.get('message', '')}{extra}
+            </div>
+            """, unsafe_allow_html=True)
 
 # -------------------------------------------------------------------
 # 3. AI & IDS
@@ -1411,20 +1528,6 @@ with workflow_tabs[2]:
 # 4. Rooms & Nodes
 # -------------------------------------------------------------------
 with workflow_tabs[3]:
-    st.markdown('<div class="section-title">Hardware Digital Twin Summary</div>', unsafe_allow_html=True)
-    if plan_nodes_list:
-        hardware_rows = _dashboard_build_hardware_rows(plan_nodes_list)
-        if hardware_rows:
-            st.dataframe(hardware_rows, use_container_width=True, hide_index=True)
-            st.caption(
-                "Each planned node is modeled as a physical StructFi unit: Raspberry Pi/OpenWRT, "
-                "directional antenna, PoE power, Cat6 backhaul, wall/corner mounting, and controller-managed roaming."
-            )
-        else:
-            st.info("No hardware digital twin profiles are available for the current plan.")
-    else:
-        st.info("Run AI Planning to generate hardware digital twin profiles for the suggested nodes.")
-
     rooms_col, nodes_col = st.columns([1, 1])
 
     with rooms_col:
@@ -1457,17 +1560,6 @@ with workflow_tabs[3]:
                 projected_clients = capacity.get("projected_clients", capacity_metrics.get("expected_clients", 0))
                 projected_capacity = capacity.get("projected_capacity_mbps", capacity_metrics.get("effective_capacity_mbps", 0))
                 tx_power = node.get("tx_power", node.get("tx_power_dbm", telemetry.get("tx_power_dbm", 0)))
-                hardware = _dashboard_hardware_profile(node)
-                device_type = _dashboard_hw_value(hardware, ["device_type", "physical_node_model"], "Raspberry Pi 4B")
-                firmware = _dashboard_hw_value(hardware, ["firmware"], "OpenWRT")
-                antenna_type = _dashboard_hw_value(hardware, ["antenna_type"], "Directional")
-                antenna_gain = _dashboard_hw_value(hardware, ["antenna_gain_dbi"], "-")
-                poe_standard = _dashboard_hw_value(hardware, ["poe_standard"], "IEEE 802.3af")
-                backhaul_type = _dashboard_hw_value(hardware, ["backhaul_type"], "Cat6 Ethernet")
-                mount_type = _dashboard_hw_value(hardware, ["mount_type"], "Embedded wall/corner node")
-                mount_height = _dashboard_hw_value(hardware, ["mount_height_m"], "-")
-                max_clients = _dashboard_hw_value(hardware, ["max_clients"], "-")
-                power_watts = _dashboard_hw_value(hardware, ["estimated_power_watts"], "-")
                 st.markdown(f"""
                 <div class="node-card">
                     <b>{node_name}</b><br>
@@ -1476,13 +1568,7 @@ with workflow_tabs[3]:
                     TX: {tx_power} dBm | Channel: {node.get("channel", 0)}<br>
                     Beam: {node.get("beam_direction_deg", node.get("antenna_direction", "omni"))}<br>
                     Coverage: {coverage_score} | Clients: {projected_clients} | Capacity: {projected_capacity} Mbps<br>
-                    Placement Score: {node.get("placement_score", 0)}<br><br>
-                    <b>Hardware Digital Twin</b><br>
-                    Device: {device_type} | Firmware: {firmware}<br>
-                    Antenna: {antenna_type} | Gain: {antenna_gain} dBi<br>
-                    PoE: {poe_standard} | Backhaul: {backhaul_type}<br>
-                    Mount: {mount_type} @ {mount_height} m | Max Clients: {max_clients}<br>
-                    Estimated Power: {power_watts} W
+                    Placement Score: {node.get("placement_score", 0)}
                 </div>
                 """, unsafe_allow_html=True)
         else:
@@ -1492,13 +1578,13 @@ with workflow_tabs[3]:
 # 5. Backend / Export
 # -------------------------------------------------------------------
 with workflow_tabs[4]:
-    st.markdown('<div class="section-title">Backend / Export</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-title">Backend & Mobile Readiness</div>', unsafe_allow_html=True)
     st.markdown(f"""
     <div class="export-card">
         <b>Backend base URL</b><br>
         <span class="subtle">{API_URL}</span><br><br>
-        <b>Local development mode</b><br>
-        <span class="subtle">Run the FastAPI backend locally with: uvicorn app.main:app --reload</span><br><br>
+        <b>Mobile-ready endpoints</b><br>
+        <span class="subtle">/mobile/bootstrap, /mobile/dashboard, /mobile/images, /mobile/nodes, /mobile/clients, /mobile/alerts</span><br><br>
         <b>Router / Security endpoints</b><br>
         <span class="subtle">/router/config, /network/vlans, /network/ssids, /security/policies, /ids/rules</span>
     </div>
@@ -1532,3 +1618,14 @@ with workflow_tabs[4]:
         st.link_button("Download Excel Report", get_excel_export_url(), use_container_width=True)
     with export_b:
         st.link_button("Download PDF Report", get_pdf_export_url(), use_container_width=True)
+
+# Auto real-time playback. This runs after rendering the current frame so the
+# user can see each tick before the page refreshes.
+if simulation_is_active and st.session_state.get("auto_simulation_enabled", False):
+    time.sleep(float(st.session_state.get("auto_simulation_interval", 1.0)))
+    auto_result = next_step()
+    if auto_result.get("step") is not None:
+        st.rerun()
+    else:
+        st.session_state.auto_simulation_enabled = False
+        st.warning(auto_result.get("detail", "Auto simulation stopped because the backend did not advance."))

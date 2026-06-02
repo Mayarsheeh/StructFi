@@ -32,6 +32,17 @@ class CoverageMetrics(BaseModel):
     target_rssi_dbm: float = -62.0
     minimum_acceptable_rssi_dbm: float = -72.0
 
+    rf_model: str = "log_distance_wall_directional"
+    frequency_ghz: float = 5.0
+    noise_floor_dbm: float = -92.0
+    avg_path_loss_db: float = 0.0
+    avg_wall_loss_db: float = 0.0
+    avg_directional_gain_db: float = 0.0
+    default_wall_material: str = "reinforced_concrete"
+    default_wall_attenuation_db: float = 18.0
+    interference_penalty_db: float = 0.0
+    rf_model_note: str = "RF digital-twin estimate; not a replacement for field survey measurements."
+
 
 class CapacityMetrics(BaseModel):
     projected_clients: int = 0
@@ -184,6 +195,12 @@ class PlanningSummaryModel(BaseModel):
     avg_snr_db: float = 0.0
     estimated_total_capacity_mbps: float = 0.0
     estimated_clients_supported: int = 0
+
+    avg_path_loss_db: float = 0.0
+    avg_wall_loss_db: float = 0.0
+    avg_directional_gain_db: float = 0.0
+    rf_model: str = "log_distance_wall_directional"
+    rf_assumption_note: str = "RF metrics are simulation estimates based on distance, wall attenuation, antenna direction, and noise floor."
 
 
 class PlanningResultModel(BaseModel):

@@ -60,6 +60,18 @@ class StructiFiSimulator:
         self.ai_engine = StructiFiAIEngine()
         self.noise_floor_dbm = -92.0
         self.max_history_points = 360
+
+        # Alert calibration thresholds used by the polished reporting /
+        # detection layer. Keep these attributes explicit so Apply CAD Plan
+        # can safely recompute alerts immediately after loading a plan.
+        self.weak_client_rssi_dbm = -72.0
+        self.weak_client_snr_db = 18.0
+        self.node_rssi_watch_dbm = -68.0
+        self.node_snr_watch_db = 24.0
+        self.retry_watch_pct = 10.0
+        self.packet_loss_watch_pct = 2.0
+        self.latency_watch_ms = 65.0
+
         self.state = self._build_default_state()
 
     # ------------------------------------------------------------------
@@ -773,6 +785,9 @@ class StructiFiSimulator:
         decisions: List[ControllerDecisionModel] = []
         decision_id = 1
 
+        # Keep the controller realistic: not every observation becomes an action.
+        # Only meaningful runtime conditions create decisions, with a small cap so
+        # the demo/report stays readable.
         for runtime in self.state.node_runtime:
             if runtime.status == "offline":
                 decisions.append(
@@ -781,25 +796,33 @@ class StructiFiSimulator:
                         node_id=runtime.id,
                         action="raise_alert",
                         value="offline",
-                        reason="Node is offline and clients must roam to nearby nodes.",
+                        reason="Node is offline; clients should roam to the nearest available node.",
+                        severity="critical",
                     )
                 )
                 decision_id += 1
                 continue
 
-            if runtime.current_load >= 7:
+            load_ratio = 0.0
+            try:
+                load_ratio = float(runtime.connected_clients or runtime.current_load or 0) / max(float(getattr(runtime, "max_clients", 14) or 14), 1.0)
+            except Exception:
+                load_ratio = 0.0
+
+            if runtime.current_load >= 6 or load_ratio >= 0.65:
                 decisions.append(
                     ControllerDecisionModel(
                         id=decision_id,
                         node_id=runtime.id,
                         action="rebalance_load",
                         value="prefer_neighbor_nodes",
-                        reason="Node load is high for a low-cost ESP32-S3 style node.",
+                        reason="Client density is approaching the configured capacity threshold.",
+                        severity="warning",
                     )
                 )
                 decision_id += 1
 
-            if runtime.radio.retry_rate_pct > 18:
+            if runtime.radio.retry_rate_pct > 8:
                 new_channel = self._next_channel(runtime.radio.current_channel)
                 decisions.append(
                     ControllerDecisionModel(
@@ -807,42 +830,51 @@ class StructiFiSimulator:
                         node_id=runtime.id,
                         action="change_channel",
                         value=str(new_channel),
-                        reason="High retry rate suggests interference or channel congestion.",
+                        reason="Retry rate indicates possible channel contention or interference.",
+                        severity="warning",
                     )
                 )
                 decision_id += 1
 
-            if runtime.radio.rssi_avg < -72 and runtime.radio.tx_power_dbm < 20:
+            if runtime.radio.rssi_avg < -62 and runtime.radio.tx_power_dbm < 20:
                 decisions.append(
                     ControllerDecisionModel(
                         id=decision_id,
                         node_id=runtime.id,
                         action="change_tx_power",
                         value="+2 dBm",
-                        reason="Weak average RSSI detected for connected clients.",
+                        reason="Average RSSI is below the planning comfort target for active clients.",
+                        severity="warning",
                     )
                 )
                 decision_id += 1
 
-            if runtime.radio.packet_loss_pct > 12:
+            if runtime.radio.packet_loss_pct > 2.0:
                 decisions.append(
                     ControllerDecisionModel(
                         id=decision_id,
                         node_id=runtime.id,
                         action="mark_degraded",
                         value="quality_degraded",
-                        reason="Packet loss is above demo threshold.",
+                        reason="Packet loss exceeded the simulation quality threshold.",
+                        severity="warning",
                     )
                 )
                 decision_id += 1
 
+            if len(decisions) >= 10:
+                break
+
         if not decisions:
+            # One stable decision is useful for the report because it documents
+            # that the controller inspected the runtime state and found no action.
             decisions.append(
                 ControllerDecisionModel(
                     id=1,
                     action="none",
                     value="stable",
-                    reason="All nodes are within normal live-simulation thresholds.",
+                    reason="Controller inspected node load, RF quality, retry rate, packet loss, and latency; no active corrective action was required.",
+                    severity="info",
                 )
             )
 
@@ -873,101 +905,147 @@ class StructiFiSimulator:
         alerts: List[SecurityAlertModel] = []
         alert_id = 1
 
+        def add_alert(severity, title, description, category="unknown", node_id=None, client_id=None, evidence=None, recommendation=""):
+            nonlocal alert_id
+            alerts.append(
+                SecurityAlertModel(
+                    id=alert_id,
+                    severity=severity,
+                    title=title,
+                    description=description,
+                    node_id=node_id,
+                    client_id=client_id,
+                    category=category,
+                    evidence=evidence or {},
+                    recommendation=recommendation,
+                )
+            )
+            alert_id += 1
+
+        # Node-level detections. Thresholds are intentionally planning-oriented:
+        # they do not spam the dashboard, but they also do not hide every issue
+        # when the simulated network is merely "mostly fine".
+        node_candidates = []
         for runtime in self.state.node_runtime:
             if runtime.status == "offline":
-                alerts.append(
-                    SecurityAlertModel(
-                        id=alert_id,
-                        severity="critical",
-                        title="Node Offline",
-                        description=f"{runtime.name} is offline. Check power, uplink, and enclosure access.",
-                        node_id=runtime.id,
-                        category="node_failure",
-                    )
-                )
-                alert_id += 1
-
+                node_candidates.append((100, runtime, "critical", "Node Offline", "node_failure", "Power/uplink loss. Clients must roam."))
+                continue
             if runtime.status == "degraded":
-                alerts.append(
-                    SecurityAlertModel(
-                        id=alert_id,
-                        severity="warning",
-                        title="Node Degraded",
-                        description=f"{runtime.name} is degraded. Simulated quality is reduced.",
-                        node_id=runtime.id,
-                        category="node_failure",
-                    )
-                )
-                alert_id += 1
+                node_candidates.append((90, runtime, "warning", "Node Degraded", "node_degraded", "Runtime status is degraded."))
 
-            if runtime.radio.rssi_avg < -72:
-                alerts.append(
-                    SecurityAlertModel(
-                        id=alert_id,
-                        severity="warning",
-                        title="Weak Signal",
-                        description=f"{runtime.name} average RSSI is {runtime.radio.rssi_avg} dBm.",
-                        node_id=runtime.id,
-                        category="weak_signal",
-                    )
-                )
-                alert_id += 1
+            rssi = float(runtime.radio.rssi_avg or -90.0)
+            snr = float(runtime.radio.snr_avg or 0.0)
+            retry = float(runtime.radio.retry_rate_pct or 0.0)
+            loss = float(runtime.radio.packet_loss_pct or 0.0)
+            latency = float(runtime.radio.latency_ms or 0.0)
+            load = int(runtime.current_load or runtime.connected_clients or 0)
 
-            if runtime.radio.retry_rate_pct > 18:
-                alerts.append(
-                    SecurityAlertModel(
-                        id=alert_id,
-                        severity="warning",
-                        title="High Retries",
-                        description=f"{runtime.name} retry rate is {runtime.radio.retry_rate_pct}%.",
-                        node_id=runtime.id,
-                        category="high_retries",
-                    )
-                )
-                alert_id += 1
+            if rssi < -62:
+                node_candidates.append((70 + abs(rssi + 62), runtime, "warning", "Weak RF Margin", "weak_signal", f"Average RSSI is {rssi} dBm, below the comfort target."))
+            if snr < 30 and load > 0:
+                node_candidates.append((55 + max(0, 30 - snr), runtime, "warning", "Reduced SNR", "low_snr", f"Average SNR is {snr} dB under active load."))
+            if retry > 8:
+                node_candidates.append((60 + retry, runtime, "warning", "Retry Rate Elevated", "high_retries", f"Retry rate is {retry}%, indicating contention or RF instability."))
+            if loss > 1.2:
+                node_candidates.append((65 + loss * 4, runtime, "warning", "Packet Loss Detected", "packet_loss", f"Packet loss is {loss}% during this simulation run."))
+            if latency > 35:
+                node_candidates.append((50 + latency / 2, runtime, "warning", "Latency Pressure", "latency", f"Average latency is {latency} ms."))
+            if load >= 4:
+                node_candidates.append((48 + load * 3, runtime, "info", "Load Watch", "anomaly", f"Node is currently serving {load} clients."))
 
-            if runtime.radio.packet_loss_pct > 12:
-                alerts.append(
-                    SecurityAlertModel(
-                        id=alert_id,
-                        severity="warning",
-                        title="Packet Loss Detected",
-                        description=f"{runtime.name} packet loss is {runtime.radio.packet_loss_pct}%.",
-                        node_id=runtime.id,
-                        category="packet_loss",
-                    )
-                )
-                alert_id += 1
+        # Pick the strongest signal per node/category and cap total node alerts.
+        unique = {}
+        for score, runtime, severity, title, category, description in node_candidates:
+            key = (runtime.id, category)
+            if key not in unique or score > unique[key][0]:
+                unique[key] = (score, runtime, severity, title, category, description)
 
-            if runtime.current_load >= 7:
-                alerts.append(
-                    SecurityAlertModel(
-                        id=alert_id,
-                        severity="warning",
-                        title="High Node Load",
-                        description=f"{runtime.name} is serving {runtime.current_load} clients.",
-                        node_id=runtime.id,
-                        category="anomaly",
-                    )
-                )
-                alert_id += 1
+        for score, runtime, severity, title, category, description in sorted(unique.values(), key=lambda x: x[0], reverse=True)[:8]:
+            add_alert(
+                severity=severity,
+                title=title,
+                description=f"{runtime.name}: {description}",
+                node_id=runtime.id,
+                category=category,
+                evidence={
+                    "rssi_avg": runtime.radio.rssi_avg,
+                    "snr_avg": runtime.radio.snr_avg,
+                    "retry_rate_pct": runtime.radio.retry_rate_pct,
+                    "packet_loss_pct": runtime.radio.packet_loss_pct,
+                    "latency_ms": runtime.radio.latency_ms,
+                    "connected_clients": runtime.connected_clients,
+                },
+                recommendation="Review node placement, RF material assumptions, channel plan, and client distribution." if severity != "info" else "Monitor this node during additional simulation steps.",
+            )
 
-        for decision in self.state.security_state.access_matrix:
-            if not decision.allowed and decision.target_zone in ["management", "controller"]:
-                severity = "critical" if decision.role == "guest" else "warning"
-                alerts.append(
-                    SecurityAlertModel(
-                        id=alert_id,
-                        severity=severity,
-                        title="Restricted Access Blocked",
-                        description=f"{decision.client_name} ({decision.role}) was blocked from {decision.target_zone}.",
-                        client_id=decision.client_id,
-                        category="segmentation_violation",
-                    )
-                )
-                alert_id += 1
+        # Client/QoS detections, capped separately so reports remain readable.
+        client_candidates = []
+        for client in self.state.clients:
+            qos_state = str(getattr(client, "qos_state", "not_evaluated"))
+            rssi = getattr(client, "current_rssi", None)
+            snr = getattr(client, "current_snr", None)
+            latency = getattr(client, "current_latency_ms", 0.0)
+            loss = getattr(client, "current_packet_loss_pct", 0.0)
+            if qos_state == "violated":
+                client_candidates.append((80, client, "warning", "QoS Violation", "anomaly", "Client traffic requirement is not currently satisfied."))
+            elif qos_state == "warning":
+                client_candidates.append((55, client, "info", "QoS Watch", "anomaly", "Client is close to its QoS threshold."))
+            if rssi is not None and rssi < self.weak_client_rssi_dbm:
+                client_candidates.append((65, client, "warning", "Client Roaming Risk", "roaming", f"Client RSSI is {rssi} dBm."))
+            if snr is not None and snr < self.weak_client_snr_db:
+                client_candidates.append((60, client, "warning", "Client Low SNR", "low_snr", f"Client SNR is {snr} dB."))
+            if latency and latency > 60:
+                client_candidates.append((50, client, "warning", "Client Latency Pressure", "latency", f"Client latency is {latency} ms."))
+            if loss and loss > 2.0:
+                client_candidates.append((55, client, "warning", "Client Packet Loss", "packet_loss", f"Client packet loss is {loss}%."))
 
-        self.state.security_state.alerts = alerts
+        seen_clients = set()
+        for _, client, severity, title, category, description in sorted(client_candidates, key=lambda x: x[0], reverse=True):
+            if client.id in seen_clients:
+                continue
+            seen_clients.add(client.id)
+            add_alert(
+                severity=severity,
+                title=title,
+                description=f"{client.name}: {description}",
+                client_id=client.id,
+                node_id=client.connected_node,
+                category=category,
+                evidence={
+                    "traffic_profile": getattr(client, "traffic_profile", None),
+                    "qos_state": getattr(client, "qos_state", None),
+                    "rssi": getattr(client, "current_rssi", None),
+                    "snr": getattr(client, "current_snr", None),
+                    "throughput_mbps": getattr(client, "current_throughput_mbps", None),
+                    "latency_ms": getattr(client, "current_latency_ms", None),
+                    "packet_loss_pct": getattr(client, "current_packet_loss_pct", None),
+                },
+                recommendation="Check client association, handover behavior, and QoS profile requirements.",
+            )
+            if len(seen_clients) >= 4:
+                break
+
+        # Do not turn the full access matrix into dozens of alerts. Only surface
+        # a tiny proof that segmentation is being enforced when relevant.
+        blocked_guest_management = [
+            d for d in self.state.security_state.access_matrix
+            if not d.allowed and d.role == "guest" and d.target_zone in ["management", "controller"]
+        ]
+        if blocked_guest_management and len(alerts) < 10:
+            sample = blocked_guest_management[0]
+            add_alert(
+                severity="info",
+                title="Segmentation Enforcement Verified",
+                description=f"Guest access to {sample.target_zone} was blocked as expected.",
+                client_id=sample.client_id,
+                category="segmentation_violation",
+                evidence={"role": sample.role, "target_zone": sample.target_zone, "allowed": sample.allowed},
+                recommendation="Keep guest isolation enabled; this is expected security behavior, not a failure.",
+            )
+
+        # Final cap keeps the UI/report sane: enough detections to prove the IDS
+        # is alive, not a wall of repeated alerts.
+        self.state.security_state.alerts = alerts[:12]
 
     def _compute_ai_summary(self):
         self.state.ai_output = self.ai_engine.evaluate(
