@@ -60,6 +60,31 @@ except Exception:
     SecurityEngine = None
 
 
+def _csv_env(name: str, default: Any) -> List[str]:
+    """
+    Read a comma-separated environment variable as a list.
+
+    Kept in main.py so Render can control CORS without changing app/core/config.py.
+    """
+    raw = os.getenv(name)
+
+    if not raw:
+        if isinstance(default, list):
+            return default
+        if isinstance(default, str):
+            return [default]
+        return ["*"]
+
+    values = [item.strip() for item in raw.split(",") if item.strip()]
+    return values or (default if isinstance(default, list) else [str(default)])
+
+
+def _cors_allowed_origins() -> List[str]:
+    configured = getattr(settings, "CORS_ALLOWED_ORIGINS", ["*"]) or ["*"]
+    return _csv_env("CORS_ALLOWED_ORIGINS", configured)
+
+
+
 app = FastAPI(
     title="StructFi Simulator",
     version=getattr(settings, "APP_VERSION", "0.2.0-demo"),
@@ -68,7 +93,7 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=getattr(settings, "CORS_ALLOWED_ORIGINS", ["*"]) or ["*"],
+    allow_origins=_cors_allowed_origins(),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -109,6 +134,13 @@ class AccessCheckRequest(BaseModel):
 
 class MobileClientConfig(BaseModel):
     base_url: Optional[str] = None
+
+
+class MobileDeviceTokenRequest(BaseModel):
+    token: str
+    platform: str = "ios"
+    device_id: Optional[str] = None
+    app_version: Optional[str] = None
 
 
 class WallMaterialConfigRequest(BaseModel):
@@ -1123,24 +1155,170 @@ def get_rendered_image(file_name: str):
 # Mobile app endpoints
 # -------------------------------------------------------------------
 
+def _mobile_alerts_from_state(state: Dict[str, Any]) -> List[Dict[str, Any]]:
+    security_state = state.get("security_state") or {}
+    alerts = security_state.get("alerts", []) or []
+    return alerts if isinstance(alerts, list) else []
+
+
+def _mobile_events_from_state(state: Dict[str, Any], limit: int = 50) -> List[Dict[str, Any]]:
+    events = state.get("events", []) or []
+
+    if not isinstance(events, list):
+        return []
+
+    safe_limit = max(1, min(int(limit), 200))
+    return events[-safe_limit:]
+
+
+def _mobile_handover_events(state: Dict[str, Any]) -> List[Dict[str, Any]]:
+    handovers = []
+
+    for event in _mobile_events_from_state(state, limit=200):
+        if not isinstance(event, dict):
+            continue
+
+        event_text = json.dumps(event, default=str).lower()
+        if "handover" in event_text or "roam" in event_text or "roaming" in event_text:
+            handovers.append(event)
+
+    return handovers
+
+
+def _mobile_qos_payload(state: Dict[str, Any]) -> Dict[str, Any]:
+    clients = state.get("clients", []) or []
+
+    if not isinstance(clients, list):
+        clients = []
+
+    qos_counts: Dict[str, int] = {}
+    packet_loss_warnings = 0
+    latency_warnings = 0
+
+    for client in clients:
+        if not isinstance(client, dict):
+            continue
+
+        qos_state = (
+            client.get("qos_state")
+            or client.get("qos")
+            or client.get("traffic_status")
+            or "unknown"
+        )
+        qos_state = str(qos_state).lower()
+        qos_counts[qos_state] = qos_counts.get(qos_state, 0) + 1
+
+        try:
+            packet_loss = float(
+                client.get(
+                    "current_packet_loss_pct",
+                    client.get("packet_loss", client.get("packet_loss_percent", 0)),
+                )
+                or 0
+            )
+            if packet_loss > 3:
+                packet_loss_warnings += 1
+        except Exception:
+            pass
+
+        try:
+            latency_ms = float(client.get("current_latency_ms", client.get("latency_ms", 0)) or 0)
+            if latency_ms > 100:
+                latency_warnings += 1
+        except Exception:
+            pass
+
+    return {
+        "qos_counts": qos_counts,
+        "packet_loss_warnings": packet_loss_warnings,
+        "latency_warnings": latency_warnings,
+        "clients_evaluated": len(clients),
+    }
+
+
+def _mobile_reports_payload() -> Dict[str, Any]:
+    reports_dir = Path("data/reports")
+    reports_dir.mkdir(parents=True, exist_ok=True)
+
+    reports = []
+
+    for path in sorted(reports_dir.glob("*"), key=lambda p: p.stat().st_mtime, reverse=True):
+        if path.suffix.lower() not in [".xlsx", ".pdf"]:
+            continue
+
+        reports.append({
+            "file_name": path.name,
+            "file_type": path.suffix.lower().replace(".", ""),
+            "size_bytes": path.stat().st_size,
+            "modified_timestamp": path.stat().st_mtime,
+            "download_url": f"/reports/{path.name}",
+        })
+
+    return {
+        "reports": reports,
+        "count": len(reports),
+        "generate": {
+            "excel_url": "/export/excel",
+            "pdf_url": "/export/pdf",
+        },
+    }
+
+
+def _mobile_device_tokens_path() -> Path:
+    path = Path("data/runtime/mobile_device_tokens.json")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _save_mobile_device_token(payload: Dict[str, Any]) -> Dict[str, Any]:
+    from datetime import datetime
+
+    path = _mobile_device_tokens_path()
+    tokens = _read_json(path, default=[])
+
+    if not isinstance(tokens, list):
+        tokens = []
+
+    token_value = payload.get("token")
+    tokens = [item for item in tokens if isinstance(item, dict) and item.get("token") != token_value]
+
+    payload["registered_at"] = datetime.utcnow().isoformat() + "Z"
+    tokens.append(payload)
+
+    path.write_text(json.dumps(tokens, indent=2), encoding="utf-8")
+
+    return {
+        "message": "Mobile device token registered successfully",
+        "registered": True,
+        "tokens_count": len(tokens),
+    }
+
+
 @app.get("/mobile/bootstrap")
 def mobile_bootstrap():
+    _auto_apply_latest_plan_if_state_empty()
+
     state = _state_dict()
     plan = _get_latest_plan_model_or_dict()
     building = _latest_building_dict()
+    alerts = _mobile_alerts_from_state(state)
+    planned_nodes = _extract_plan_nodes(plan)
 
     return {
         "project": _project_config_payload(),
+        "building_available": building is not None,
+        "plan_available": plan is not None,
+        "simulation_active": bool(state.get("node_runtime")),
         "state_summary": {
             "simulation_source": state.get("simulation_source", "unknown"),
             "step": state.get("step", 0),
-            "nodes": len(state.get("node_runtime", []) or []),
-            "clients": len(state.get("clients", []) or []),
-            "alerts": len((state.get("security_state") or {}).get("alerts", []) or []),
+            "rooms": len((building or {}).get("rooms", []) or []) if isinstance(building, dict) else 0,
+            "planned_nodes": len(planned_nodes),
+            "runtime_nodes": len(state.get("node_runtime", []) or []),
+            "clients": len(state.get("clients", []) or []) if state.get("node_runtime") else 0,
+            "alerts": len(alerts) if state.get("node_runtime") else 0,
             "ai_status": ((state.get("ai_output") or {}).get("health_summary") or {}).get("status", "unknown"),
         },
-        "building_available": building is not None,
-        "plan_available": plan is not None,
         "images": _current_images(),
         "network": {
             "vlans": getattr(settings, "VLAN_PROFILES", []),
@@ -1153,14 +1331,68 @@ def mobile_bootstrap():
 @app.get("/mobile/dashboard")
 def mobile_dashboard():
     _auto_apply_latest_plan_if_state_empty()
+
     state = _state_dict()
+    plan = _get_latest_plan_model_or_dict()
+    building = _latest_building_dict()
+    alerts = _mobile_alerts_from_state(state)
+
+    rooms = (building or {}).get("rooms", []) if isinstance(building, dict) else []
+    planned_nodes = _extract_plan_nodes(plan)
+    runtime_nodes = state.get("node_runtime", []) or []
+    clients = state.get("clients", []) or []
+    simulation_active = bool(runtime_nodes)
+
     return {
+        "summary": {
+            "rooms": len(rooms),
+            "planned_nodes": len(planned_nodes),
+            "runtime_nodes": len(runtime_nodes),
+            "nodes": len(runtime_nodes) if simulation_active else len(planned_nodes),
+            "clients": len(clients) if simulation_active else 0,
+            "alerts": len(alerts) if simulation_active else 0,
+            "simulation_step": state.get("step", 0),
+            "simulation_source": state.get("simulation_source", "unknown"),
+            "simulation_active": simulation_active,
+            "placement_score": ((plan or {}).get("summary") or {}).get("placement_score") if isinstance(plan, dict) else None,
+            "ai_status": ((state.get("ai_output") or {}).get("health_summary") or {}).get("status", "unknown"),
+        },
         "state": state,
-        "summary": simulation_summary(),
         "images": _current_images(),
         "ai": state.get("ai_output", {}),
-        "alerts": (state.get("security_state") or {}).get("alerts", []),
+        "alerts": alerts if simulation_active else [],
+        "latest_alerts": alerts[-5:] if simulation_active else [],
+        "latest_events": _mobile_events_from_state(state, limit=5) if simulation_active else [],
         "router": router_status(),
+    }
+
+
+@app.get("/mobile/simulation")
+def mobile_simulation():
+    _auto_apply_latest_plan_if_state_empty()
+
+    state = _state_dict()
+    runtime_nodes = state.get("node_runtime", []) or []
+    clients = state.get("clients", []) or []
+    simulation_active = bool(runtime_nodes)
+
+    return {
+        "active": simulation_active,
+        "step": state.get("step", 0),
+        "simulation_source": state.get("simulation_source", "unknown"),
+        "runtime_nodes": runtime_nodes,
+        "clients": clients if simulation_active else [],
+        "clients_count": len(clients) if simulation_active else 0,
+        "events": _mobile_events_from_state(state, limit=50) if simulation_active else [],
+        "handover_events": _mobile_handover_events(state) if simulation_active else [],
+        "qos": _mobile_qos_payload(state) if simulation_active else {
+            "qos_counts": {},
+            "packet_loss_warnings": 0,
+            "latency_warnings": 0,
+            "clients_evaluated": 0,
+        },
+        "controller_state": state.get("controller_state", {}) if simulation_active else {},
+        "telemetry_history": (state.get("telemetry_history", []) or [])[-50:] if simulation_active else [],
     }
 
 
@@ -1171,7 +1403,27 @@ def mobile_images():
 
 @app.get("/mobile/nodes")
 def mobile_nodes():
-    return simulation_nodes()
+    _auto_apply_latest_plan_if_state_empty()
+
+    state = _state_dict()
+    plan = _get_latest_plan_model_or_dict()
+    runtime_nodes = state.get("node_runtime", []) or []
+    planned_nodes = _extract_plan_nodes(plan)
+
+    if runtime_nodes:
+        return {
+            "mode": "runtime",
+            "nodes": runtime_nodes,
+            "count": len(runtime_nodes),
+            "simulation_active": True,
+        }
+
+    return {
+        "mode": "planned",
+        "nodes": planned_nodes,
+        "count": len(planned_nodes),
+        "simulation_active": False,
+    }
 
 
 @app.get("/mobile/clients")
@@ -1181,7 +1433,33 @@ def mobile_clients():
 
 @app.get("/mobile/alerts")
 def mobile_alerts():
-    return security_alerts()
+    _auto_apply_latest_plan_if_state_empty()
+
+    state = _state_dict()
+    alerts = _mobile_alerts_from_state(state)
+    simulation_active = bool(state.get("node_runtime"))
+
+    return {
+        "alerts": alerts if simulation_active else [],
+        "count": len(alerts) if simulation_active else 0,
+        "simulation_active": simulation_active,
+    }
+
+
+@app.get("/mobile/reports")
+def mobile_reports():
+    return _mobile_reports_payload()
+
+
+@app.post("/mobile/device-token")
+def mobile_device_token(payload: MobileDeviceTokenRequest):
+    data = payload.model_dump() if hasattr(payload, "model_dump") else payload.dict()
+
+    if not data.get("token"):
+        raise HTTPException(status_code=400, detail="Device token is required")
+
+    return _save_mobile_device_token(data)
+
 
 
 # -------------------------------------------------------------------
