@@ -1,22 +1,22 @@
 {
-  "source_file_name": "cad_source_20260602_054444.dxf",
-  "source_file_path": "data/uploads/cad_source_20260602_054444.dxf",
-  "working_dxf_file_name": "cad_source_20260602_054444.dxf",
-  "working_dxf_file_path": "data/uploads/cad_source_20260602_054444.dxf",
+  "source_file_name": "cad_source_20260602_221628.dxf",
+  "source_file_path": "data/uploads/cad_source_20260602_221628.dxf",
+  "working_dxf_file_name": "cad_source_20260602_221628.dxf",
+  "working_dxf_file_path": "data/uploads/cad_source_20260602_221628.dxf",
   "converted": false,
   "source_format": "DXF",
   "working_format": "DXF",
   "summary": {
-    "total_entities": 536,
+    "total_entities": 28835,
     "entity_counts": {
-      "LINE": 437,
-      "LWPOLYLINE": 4,
-      "POLYLINE": 0,
+      "LINE": 28748,
+      "LWPOLYLINE": 13,
+      "POLYLINE": 31,
       "TEXT": 0,
-      "MTEXT": 13,
-      "CIRCLE": 3,
-      "ARC": 0,
-      "OTHER": 79
+      "MTEXT": 15,
+      "CIRCLE": 0,
+      "ARC": 6,
+      "OTHER": 22
     }
   }
 }
