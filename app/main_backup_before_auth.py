@@ -2,25 +2,15 @@ from __future__ import annotations
 
 import json
 import os
-import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 os.environ["MPLBACKEND"] = "Agg"
 
-from fastapi import Depends, FastAPI, HTTPException, UploadFile, File
+from fastapi import FastAPI, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
-from app.auth import (
-    AuthenticatedUser,
-    LoginRequest,
-    LoginResponse,
-    UserPublic,
-    authenticate_user,
-    create_access_token,
-    get_current_user,
-)
 
 try:
     from app.core.config import settings
@@ -109,64 +99,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# -------------------------------------------------------------------
-# Auth API
-# -------------------------------------------------------------------
-
-@app.post("/auth/login", response_model=LoginResponse)
-def auth_login(payload: LoginRequest):
-    user = authenticate_user(payload.email, payload.password)
-
-    if user is None:
-        raise HTTPException(
-            status_code=401,
-            detail="Invalid email or password.",
-        )
-
-    access_token = create_access_token(user)
-
-    return LoginResponse(
-        access_token=access_token,
-        user=user.to_public(),
-    )
-
-
-@app.get("/auth/me", response_model=UserPublic)
-def auth_me(
-    current_user: AuthenticatedUser = Depends(get_current_user),
-):
-    return current_user.to_public()
-
-@app.get("/mobile/context")
-def mobile_context(
-    current_user: AuthenticatedUser = Depends(get_current_user),
-):
-    user_public = current_user.to_public()
-
-    if hasattr(user_public, "model_dump"):
-        user_payload = user_public.model_dump()
-    else:
-        user_payload = user_public.dict()
-
-    return {
-        "authenticated": True,
-        "user": user_payload,
-        "organization": {
-            "id": current_user.organization_id,
-            "name": current_user.organization_name,
-        },
-        "project": {
-            "id": current_user.project_id,
-            "name": current_user.project_name,
-        },
-        "permissions": {
-            "can_view_network": True,
-            "can_manage_nodes": current_user.role in ["admin", "manager"],
-            "can_change_channels": current_user.role in ["admin", "manager"],
-            "can_restart_nodes": current_user.role in ["admin", "manager"],
-            "can_generate_reports": current_user.role in ["admin", "manager"],
-        },
-    }
 
 # -------------------------------------------------------------------
 # Services
@@ -184,180 +116,6 @@ runtime_reset_service = RuntimeResetService()
 wall_material_manager = WallMaterialManager()
 ids_engine = IDSEngine() if IDSEngine else None
 security_engine = SecurityEngine() if SecurityEngine else None
-
-# -------------------------------------------------------------------
-# Mobile Admin Control Layer
-# -------------------------------------------------------------------
-
-ADMIN_ACTION_LOG: List[Dict[str, Any]] = []
-
-ALLOWED_5GHZ_CHANNELS = {
-    36, 40, 44, 48,
-    52, 56, 60, 64,
-    100, 104, 108, 112, 116,
-    132, 136, 140,
-    149, 153, 157, 161, 165,
-}
-
-
-def _require_network_admin(current_user: AuthenticatedUser) -> None:
-    if current_user.role not in ["admin", "manager"]:
-        raise HTTPException(
-            status_code=403,
-            detail="This action requires admin or manager permission.",
-        )
-
-
-def _model_to_dict(value: Any) -> Dict[str, Any]:
-    if value is None:
-        return {}
-
-    if isinstance(value, dict):
-        return value
-
-    if hasattr(value, "model_dump"):
-        return value.model_dump()
-
-    if hasattr(value, "dict"):
-        return value.dict()
-
-    return dict(getattr(value, "__dict__", {}) or {})
-
-
-def _find_runtime_node(node_id: int) -> Any:
-    state = getattr(simulator, "state", None)
-    runtime_nodes = getattr(state, "node_runtime", []) or []
-
-    for node in runtime_nodes:
-        try:
-            if int(getattr(node, "id", -1)) == int(node_id):
-                return node
-        except Exception:
-            continue
-
-    return None
-
-
-def _node_control_snapshot(node: Any) -> Dict[str, Any]:
-    node_payload = _model_to_dict(node)
-    radio_payload = _model_to_dict(getattr(node, "radio", None))
-
-    return {
-        "id": node_payload.get("id"),
-        "name": node_payload.get("name"),
-        "status": node_payload.get("status"),
-        "room_name": node_payload.get("room_name"),
-        "connected_clients": node_payload.get("connected_clients"),
-        "current_load": node_payload.get("current_load"),
-        "radio": {
-            "current_channel": radio_payload.get("current_channel"),
-            "tx_power_dbm": radio_payload.get("tx_power_dbm"),
-            "rssi_avg": radio_payload.get("rssi_avg"),
-            "snr_avg": radio_payload.get("snr_avg"),
-            "retry_rate_pct": radio_payload.get("retry_rate_pct"),
-            "packet_loss_pct": radio_payload.get("packet_loss_pct"),
-            "throughput_mbps": radio_payload.get("throughput_mbps"),
-            "latency_ms": radio_payload.get("latency_ms"),
-        },
-    }
-
-
-def _append_admin_action(
-    *,
-    current_user: AuthenticatedUser,
-    action: str,
-    node_id: int,
-    old_value: Any,
-    new_value: Any,
-    reason: Optional[str],
-) -> Dict[str, Any]:
-    entry = {
-        "id": len(ADMIN_ACTION_LOG) + 1,
-        "timestamp": int(time.time()),
-        "user_id": current_user.id,
-        "user_email": current_user.email,
-        "organization_id": current_user.organization_id,
-        "project_id": current_user.project_id,
-        "action": action,
-        "node_id": node_id,
-        "old_value": old_value,
-        "new_value": new_value,
-        "reason": reason or "No reason provided.",
-    }
-
-    ADMIN_ACTION_LOG.append(entry)
-    return entry
-
-
-@app.post("/mobile/admin/nodes/{node_id}/channel")
-def mobile_admin_set_node_channel(
-    node_id: int,
-    payload: NodeChannelUpdateRequest,
-    current_user: AuthenticatedUser = Depends(get_current_user),
-):
-    _require_network_admin(current_user)
-
-    if payload.channel not in ALLOWED_5GHZ_CHANNELS:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "Unsupported 5GHz channel. Use one of: "
-                + ", ".join(str(ch) for ch in sorted(ALLOWED_5GHZ_CHANNELS))
-            ),
-        )
-
-    node = _find_runtime_node(node_id)
-
-    if node is None:
-        raise HTTPException(
-            status_code=404,
-            detail=f"Runtime node {node_id} was not found.",
-        )
-
-    radio = getattr(node, "radio", None)
-
-    if radio is None:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Node {node_id} has no radio telemetry object.",
-        )
-
-    old_channel = getattr(radio, "current_channel", None)
-    setattr(radio, "current_channel", payload.channel)
-
-    if hasattr(simulator, "_now"):
-        try:
-            setattr(node, "last_seen", simulator._now())
-        except Exception:
-            pass
-
-    audit_entry = _append_admin_action(
-        current_user=current_user,
-        action="change_channel",
-        node_id=node_id,
-        old_value=old_channel,
-        new_value=payload.channel,
-        reason=payload.reason,
-    )
-
-    return {
-        "success": True,
-        "message": f"Node {node_id} channel changed from {old_channel} to {payload.channel}.",
-        "action": audit_entry,
-        "node": _node_control_snapshot(node),
-    }
-
-
-@app.get("/mobile/admin/actions")
-def mobile_admin_actions(
-    current_user: AuthenticatedUser = Depends(get_current_user),
-):
-    _require_network_admin(current_user)
-
-    return {
-        "count": len(ADMIN_ACTION_LOG),
-        "actions": list(reversed(ADMIN_ACTION_LOG[-50:])),
-    }
 
 
 # -------------------------------------------------------------------
@@ -396,9 +154,6 @@ class WallMaterialConfigRequest(BaseModel):
     structural_wall_material: Optional[str] = None
     custom_overrides: Dict[str, Any] = {}
 
-class NodeChannelUpdateRequest(BaseModel):
-    channel: int
-    reason: Optional[str] = None
 
 # -------------------------------------------------------------------
 # Internal helpers
