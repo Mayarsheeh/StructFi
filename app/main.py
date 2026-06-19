@@ -186,187 +186,17 @@ ids_engine = IDSEngine() if IDSEngine else None
 security_engine = SecurityEngine() if SecurityEngine else None
 
 # -------------------------------------------------------------------
-# Mobile Admin Control Layer
-# -------------------------------------------------------------------
-
-ADMIN_ACTION_LOG: List[Dict[str, Any]] = []
-
-ALLOWED_5GHZ_CHANNELS = {
-    36, 40, 44, 48,
-    52, 56, 60, 64,
-    100, 104, 108, 112, 116,
-    132, 136, 140,
-    149, 153, 157, 161, 165,
-}
-
-
-def _require_network_admin(current_user: AuthenticatedUser) -> None:
-    if current_user.role not in ["admin", "manager"]:
-        raise HTTPException(
-            status_code=403,
-            detail="This action requires admin or manager permission.",
-        )
-
-
-def _model_to_dict(value: Any) -> Dict[str, Any]:
-    if value is None:
-        return {}
-
-    if isinstance(value, dict):
-        return value
-
-    if hasattr(value, "model_dump"):
-        return value.model_dump()
-
-    if hasattr(value, "dict"):
-        return value.dict()
-
-    return dict(getattr(value, "__dict__", {}) or {})
-
-
-def _find_runtime_node(node_id: int) -> Any:
-    state = getattr(simulator, "state", None)
-    runtime_nodes = getattr(state, "node_runtime", []) or []
-
-    for node in runtime_nodes:
-        try:
-            if int(getattr(node, "id", -1)) == int(node_id):
-                return node
-        except Exception:
-            continue
-
-    return None
-
-
-def _node_control_snapshot(node: Any) -> Dict[str, Any]:
-    node_payload = _model_to_dict(node)
-    radio_payload = _model_to_dict(getattr(node, "radio", None))
-
-    return {
-        "id": node_payload.get("id"),
-        "name": node_payload.get("name"),
-        "status": node_payload.get("status"),
-        "room_name": node_payload.get("room_name"),
-        "connected_clients": node_payload.get("connected_clients"),
-        "current_load": node_payload.get("current_load"),
-        "radio": {
-            "current_channel": radio_payload.get("current_channel"),
-            "tx_power_dbm": radio_payload.get("tx_power_dbm"),
-            "rssi_avg": radio_payload.get("rssi_avg"),
-            "snr_avg": radio_payload.get("snr_avg"),
-            "retry_rate_pct": radio_payload.get("retry_rate_pct"),
-            "packet_loss_pct": radio_payload.get("packet_loss_pct"),
-            "throughput_mbps": radio_payload.get("throughput_mbps"),
-            "latency_ms": radio_payload.get("latency_ms"),
-        },
-    }
-
-
-def _append_admin_action(
-    *,
-    current_user: AuthenticatedUser,
-    action: str,
-    node_id: int,
-    old_value: Any,
-    new_value: Any,
-    reason: Optional[str],
-) -> Dict[str, Any]:
-    entry = {
-        "id": len(ADMIN_ACTION_LOG) + 1,
-        "timestamp": int(time.time()),
-        "user_id": current_user.id,
-        "user_email": current_user.email,
-        "organization_id": current_user.organization_id,
-        "project_id": current_user.project_id,
-        "action": action,
-        "node_id": node_id,
-        "old_value": old_value,
-        "new_value": new_value,
-        "reason": reason or "No reason provided.",
-    }
-
-    ADMIN_ACTION_LOG.append(entry)
-    return entry
-
-
-@app.post("/mobile/admin/nodes/{node_id}/channel")
-def mobile_admin_set_node_channel(
-    node_id: int,
-    payload: NodeChannelUpdateRequest,
-    current_user: AuthenticatedUser = Depends(get_current_user),
-):
-    _require_network_admin(current_user)
-
-    if payload.channel not in ALLOWED_5GHZ_CHANNELS:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "Unsupported 5GHz channel. Use one of: "
-                + ", ".join(str(ch) for ch in sorted(ALLOWED_5GHZ_CHANNELS))
-            ),
-        )
-
-    node = _find_runtime_node(node_id)
-
-    if node is None:
-        raise HTTPException(
-            status_code=404,
-            detail=f"Runtime node {node_id} was not found.",
-        )
-
-    radio = getattr(node, "radio", None)
-
-    if radio is None:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Node {node_id} has no radio telemetry object.",
-        )
-
-    old_channel = getattr(radio, "current_channel", None)
-    setattr(radio, "current_channel", payload.channel)
-
-    if hasattr(simulator, "_now"):
-        try:
-            setattr(node, "last_seen", simulator._now())
-        except Exception:
-            pass
-
-    audit_entry = _append_admin_action(
-        current_user=current_user,
-        action="change_channel",
-        node_id=node_id,
-        old_value=old_channel,
-        new_value=payload.channel,
-        reason=payload.reason,
-    )
-
-    return {
-        "success": True,
-        "message": f"Node {node_id} channel changed from {old_channel} to {payload.channel}.",
-        "action": audit_entry,
-        "node": _node_control_snapshot(node),
-    }
-
-
-@app.get("/mobile/admin/actions")
-def mobile_admin_actions(
-    current_user: AuthenticatedUser = Depends(get_current_user),
-):
-    _require_network_admin(current_user)
-
-    return {
-        "count": len(ADMIN_ACTION_LOG),
-        "actions": list(reversed(ADMIN_ACTION_LOG[-50:])),
-    }
-
-
-# -------------------------------------------------------------------
 # Request models
 # -------------------------------------------------------------------
 
 class NodeStatusUpdate(BaseModel):
     node_id: int
     status: str
+
+
+class NodeChannelUpdateRequest(BaseModel):
+    channel: int
+    reason: Optional[str] = None
 
 
 class AccessCheckRequest(BaseModel):
@@ -396,9 +226,6 @@ class WallMaterialConfigRequest(BaseModel):
     structural_wall_material: Optional[str] = None
     custom_overrides: Dict[str, Any] = {}
 
-class NodeChannelUpdateRequest(BaseModel):
-    channel: int
-    reason: Optional[str] = None
 
 # -------------------------------------------------------------------
 # Internal helpers
@@ -483,13 +310,20 @@ def _apply_latest_plan_to_simulation_or_raise() -> Dict[str, Any]:
 def _auto_apply_latest_plan_if_state_empty() -> None:
     """
     Safety net for mobile and cloud demos.
-    If the simulator is empty but latest_plan.json exists, auto-apply it before returning state.
+
+    If the simulator is empty but a latest CAD plan exists, auto-apply it before returning
+    mobile/simulation state. If no plan file exists but extracted rooms exist, try to
+    rebuild a plan from the latest building model.
     """
     try:
         if not _simulation_state_needs_plan():
             return
 
         plan = _unwrap_plan_payload(_get_latest_plan_model_or_dict())
+
+        if not isinstance(plan, dict) or not _plan_has_nodes(plan):
+            plan = _unwrap_plan_payload(_plan_from_latest_building_or_dxf())
+
         if isinstance(plan, dict) and _plan_has_nodes(plan):
             simulator.load_cad_plan(plan)
     except Exception:
@@ -689,6 +523,244 @@ def _project_config_payload() -> Dict[str, Any]:
 
 
 # -------------------------------------------------------------------
+# Mobile Admin Control Layer
+# -------------------------------------------------------------------
+
+ADMIN_ACTION_LOG: List[Dict[str, Any]] = []
+
+ALLOWED_5GHZ_CHANNELS = {
+    36, 40, 44, 48,
+    52, 56, 60, 64,
+    100, 104, 108, 112, 116,
+    132, 136, 140,
+    149, 153, 157, 161, 165,
+}
+
+
+def _require_network_admin(current_user: AuthenticatedUser) -> None:
+    if current_user.role not in ["admin", "manager"]:
+        raise HTTPException(
+            status_code=403,
+            detail="This action requires admin or manager permission.",
+        )
+
+
+def _runtime_nodes_from_simulator_memory() -> List[Any]:
+    state = getattr(simulator, "state", None)
+    runtime_nodes = getattr(state, "node_runtime", None)
+
+    if isinstance(runtime_nodes, list):
+        return runtime_nodes
+
+    if isinstance(state, dict):
+        runtime_nodes = state.get("node_runtime")
+
+        if isinstance(runtime_nodes, list):
+            return runtime_nodes
+
+    state_dict = _state_dict()
+    runtime_nodes = state_dict.get("node_runtime", [])
+
+    return runtime_nodes if isinstance(runtime_nodes, list) else []
+
+
+def _node_id_value(node: Any) -> Optional[int]:
+    try:
+        if isinstance(node, dict):
+            value = node.get("id")
+        else:
+            value = getattr(node, "id", None)
+
+        if value is None:
+            return None
+
+        return int(value)
+    except Exception:
+        return None
+
+
+def _find_runtime_node(node_id: int) -> Any:
+    _auto_apply_latest_plan_if_state_empty()
+
+    for node in _runtime_nodes_from_simulator_memory():
+        if _node_id_value(node) == int(node_id):
+            return node
+
+    return None
+
+
+def _get_node_radio(node: Any) -> Any:
+    if isinstance(node, dict):
+        return node.get("radio")
+
+    return getattr(node, "radio", None)
+
+
+def _get_radio_channel(radio: Any) -> Any:
+    if isinstance(radio, dict):
+        return radio.get("current_channel")
+
+    return getattr(radio, "current_channel", None)
+
+
+def _set_radio_channel(radio: Any, channel: int) -> None:
+    if isinstance(radio, dict):
+        radio["current_channel"] = channel
+        return
+
+    setattr(radio, "current_channel", channel)
+
+
+def _touch_node_last_seen(node: Any) -> None:
+    try:
+        last_seen_value = simulator._now() if hasattr(simulator, "_now") else int(time.time())
+
+        if isinstance(node, dict):
+            node["last_seen"] = last_seen_value
+        else:
+            setattr(node, "last_seen", last_seen_value)
+    except Exception:
+        pass
+
+
+def _node_control_snapshot(node: Any) -> Dict[str, Any]:
+    node_payload = _model_to_dict(node) or {}
+
+    if not isinstance(node_payload, dict):
+        node_payload = {}
+
+    radio_payload = _model_to_dict(node_payload.get("radio") or _get_node_radio(node)) or {}
+
+    if not isinstance(radio_payload, dict):
+        radio_payload = {}
+
+    return {
+        "id": node_payload.get("id"),
+        "name": node_payload.get("name"),
+        "status": node_payload.get("status"),
+        "room_name": node_payload.get("room_name"),
+        "connected_clients": node_payload.get("connected_clients"),
+        "current_load": node_payload.get("current_load"),
+        "radio": {
+            "current_channel": radio_payload.get("current_channel"),
+            "tx_power_dbm": radio_payload.get("tx_power_dbm"),
+            "rssi_avg": radio_payload.get("rssi_avg"),
+            "snr_avg": radio_payload.get("snr_avg"),
+            "retry_rate_pct": radio_payload.get("retry_rate_pct"),
+            "packet_loss_pct": radio_payload.get("packet_loss_pct"),
+            "throughput_mbps": radio_payload.get("throughput_mbps"),
+            "latency_ms": radio_payload.get("latency_ms"),
+        },
+    }
+
+
+def _append_admin_action(
+    *,
+    current_user: AuthenticatedUser,
+    action: str,
+    node_id: int,
+    old_value: Any,
+    new_value: Any,
+    reason: Optional[str],
+) -> Dict[str, Any]:
+    entry = {
+        "id": len(ADMIN_ACTION_LOG) + 1,
+        "timestamp": int(time.time()),
+        "user_id": current_user.id,
+        "user_email": current_user.email,
+        "organization_id": current_user.organization_id,
+        "organization_name": current_user.organization_name,
+        "project_id": current_user.project_id,
+        "project_name": current_user.project_name,
+        "action": action,
+        "node_id": node_id,
+        "old_value": old_value,
+        "new_value": new_value,
+        "reason": reason or "No reason provided.",
+    }
+
+    ADMIN_ACTION_LOG.append(entry)
+    return entry
+
+
+@app.post("/mobile/admin/nodes/{node_id}/channel")
+def mobile_admin_set_node_channel(
+    node_id: int,
+    payload: NodeChannelUpdateRequest,
+    current_user: AuthenticatedUser = Depends(get_current_user),
+):
+    _require_network_admin(current_user)
+
+    if payload.channel not in ALLOWED_5GHZ_CHANNELS:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Unsupported 5GHz channel. Use one of: "
+                + ", ".join(str(ch) for ch in sorted(ALLOWED_5GHZ_CHANNELS))
+            ),
+        )
+
+    node = _find_runtime_node(node_id)
+
+    if node is None:
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                f"Runtime node {node_id} was not found. "
+                "Run CAD planning and apply the latest plan to the simulation first."
+            ),
+        )
+
+    radio = _get_node_radio(node)
+
+    if radio is None:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Node {node_id} has no radio telemetry object.",
+        )
+
+    old_channel = _get_radio_channel(radio)
+    _set_radio_channel(radio, payload.channel)
+    _touch_node_last_seen(node)
+
+    audit_entry = _append_admin_action(
+        current_user=current_user,
+        action="change_channel",
+        node_id=node_id,
+        old_value=old_channel,
+        new_value=payload.channel,
+        reason=payload.reason,
+    )
+
+    return {
+        "success": True,
+        "message": f"Node {node_id} channel changed from {old_channel} to {payload.channel}.",
+        "action": audit_entry,
+        "node": _node_control_snapshot(node),
+    }
+
+
+@app.get("/mobile/admin/actions")
+def mobile_admin_actions(
+    current_user: AuthenticatedUser = Depends(get_current_user),
+):
+    _require_network_admin(current_user)
+
+    actions = [
+        action
+        for action in ADMIN_ACTION_LOG
+        if action.get("organization_id") == current_user.organization_id
+        and action.get("project_id") == current_user.project_id
+    ]
+
+    return {
+        "count": len(actions),
+        "actions": list(reversed(actions[-50:])),
+    }
+
+
+
+# -------------------------------------------------------------------
 # Startup
 # -------------------------------------------------------------------
 
@@ -696,13 +768,29 @@ def _project_config_payload() -> Dict[str, Any]:
 def reset_runtime_on_startup():
     global simulator
 
-    # Keep startup safe for the dashboard. Do not delete uploaded CAD files.
-    try:
-        runtime_reset_service.reset_all_runtime_state()
-    except Exception:
-        pass
+    # Important for Render/mobile demos:
+    # Do NOT wipe uploaded CAD / parsed rooms / latest plan on every deploy.
+    # Only reset persisted runtime state when this env var is explicitly enabled.
+    should_reset_runtime = os.getenv("STRUCTFI_RESET_RUNTIME_ON_STARTUP", "false").lower() in {
+        "1",
+        "true",
+        "yes",
+    }
+
+    if should_reset_runtime:
+        try:
+            runtime_reset_service.reset_all_runtime_state()
+        except Exception:
+            pass
 
     simulator = StructiFiSimulator()
+
+    # If a latest CAD plan exists on disk, apply it into memory so mobile endpoints
+    # recover after a Render restart without requiring Streamlit to be opened first.
+    try:
+        _auto_apply_latest_plan_if_state_empty()
+    except Exception:
+        pass
 
 
 # -------------------------------------------------------------------
@@ -803,6 +891,7 @@ def simulation_step():
 
 @app.post("/simulation/run-steps/{steps}")
 def simulation_run_steps(steps: int):
+    _auto_apply_latest_plan_if_state_empty()
     steps = max(1, min(int(steps), 100))
     for _ in range(steps):
         simulator.step()
