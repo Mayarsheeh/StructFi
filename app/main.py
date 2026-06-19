@@ -970,6 +970,177 @@ def mobile_admin_update_wifi_config(
         "action": audit_entry,
     }
 
+
+# -------------------------------------------------------------------
+# Mobile Security / Access Control Admin
+# -------------------------------------------------------------------
+
+SECURITY_POLICY_BY_PROJECT: Dict[int, Dict[str, Any]] = {}
+
+ALLOWED_FIREWALL_MODES = {
+    "Balanced",
+    "Strict",
+    "Performance",
+}
+
+ALLOWED_THREAT_LEVELS = {
+    "Low",
+    "Medium",
+    "High",
+    "Critical",
+}
+
+ALLOWED_MANAGEMENT_ACCESS_MODES = {
+    "Admins Only",
+    "Managers + Admins",
+    "Local Network Only",
+}
+
+
+class SecurityPolicyRequest(BaseModel):
+    firewall_mode: str = "Balanced"
+    ids_ips_enabled: bool = True
+    threat_level: str = "Medium"
+    block_unknown_devices: bool = True
+    guest_to_lan_blocked: bool = True
+    malicious_domain_filtering: bool = True
+    management_access_mode: str = "Admins Only"
+    blocked_devices: Optional[List[str]] = None
+    reason: Optional[str] = None
+
+
+def _default_security_policy(current_user: AuthenticatedUser) -> Dict[str, Any]:
+    return {
+        "firewall_mode": "Balanced",
+        "ids_ips_enabled": True,
+        "threat_level": "Medium",
+        "block_unknown_devices": True,
+        "guest_to_lan_blocked": True,
+        "malicious_domain_filtering": True,
+        "management_access_mode": "Admins Only",
+        "blocked_devices": [],
+        "organization_id": current_user.organization_id,
+        "organization_name": current_user.organization_name,
+        "project_id": current_user.project_id,
+        "project_name": current_user.project_name,
+        "updated_by": "system",
+        "updated_by_email": None,
+        "updated_at": int(time.time()),
+        "version": "v3.01",
+    }
+
+
+def _get_security_policy(current_user: AuthenticatedUser) -> Dict[str, Any]:
+    project_id = int(current_user.project_id)
+
+    if project_id not in SECURITY_POLICY_BY_PROJECT:
+        SECURITY_POLICY_BY_PROJECT[project_id] = _default_security_policy(current_user)
+
+    return SECURITY_POLICY_BY_PROJECT[project_id]
+
+
+def _validate_security_policy(payload: SecurityPolicyRequest) -> None:
+    if payload.firewall_mode not in ALLOWED_FIREWALL_MODES:
+        raise HTTPException(
+            status_code=400,
+            detail="Unsupported firewall mode.",
+        )
+
+    if payload.threat_level not in ALLOWED_THREAT_LEVELS:
+        raise HTTPException(
+            status_code=400,
+            detail="Unsupported threat level.",
+        )
+
+    if payload.management_access_mode not in ALLOWED_MANAGEMENT_ACCESS_MODES:
+        raise HTTPException(
+            status_code=400,
+            detail="Unsupported management access mode.",
+        )
+
+    blocked_devices = payload.blocked_devices or []
+
+    if not isinstance(blocked_devices, list):
+        raise HTTPException(
+            status_code=400,
+            detail="Blocked devices must be a list.",
+        )
+
+    if len(blocked_devices) > 100:
+        raise HTTPException(
+            status_code=400,
+            detail="Blocked devices list is too large.",
+        )
+
+
+@app.get("/mobile/admin/security/policy")
+def mobile_admin_get_security_policy(
+    current_user: AuthenticatedUser = Depends(get_current_user),
+):
+    _require_network_admin(current_user)
+
+    return {
+        "success": True,
+        "policy": _get_security_policy(current_user),
+    }
+
+
+@app.post("/mobile/admin/security/policy")
+def mobile_admin_update_security_policy(
+    payload: SecurityPolicyRequest,
+    current_user: AuthenticatedUser = Depends(get_current_user),
+):
+    _require_network_admin(current_user)
+    _validate_security_policy(payload)
+
+    old_policy = dict(_get_security_policy(current_user))
+
+    new_policy = {
+        "firewall_mode": payload.firewall_mode,
+        "ids_ips_enabled": bool(payload.ids_ips_enabled),
+        "threat_level": payload.threat_level,
+        "block_unknown_devices": bool(payload.block_unknown_devices),
+        "guest_to_lan_blocked": bool(payload.guest_to_lan_blocked),
+        "malicious_domain_filtering": bool(payload.malicious_domain_filtering),
+        "management_access_mode": payload.management_access_mode,
+        "blocked_devices": payload.blocked_devices or [],
+        "organization_id": current_user.organization_id,
+        "organization_name": current_user.organization_name,
+        "project_id": current_user.project_id,
+        "project_name": current_user.project_name,
+        "updated_by": current_user.name,
+        "updated_by_email": current_user.email,
+        "updated_at": int(time.time()),
+        "version": "v3.01",
+    }
+
+    SECURITY_POLICY_BY_PROJECT[int(current_user.project_id)] = new_policy
+
+    audit_entry = {
+        "id": len(ADMIN_ACTION_LOG) + 1,
+        "timestamp": int(time.time()),
+        "user_id": current_user.id,
+        "user_email": current_user.email,
+        "organization_id": current_user.organization_id,
+        "organization_name": current_user.organization_name,
+        "project_id": current_user.project_id,
+        "project_name": current_user.project_name,
+        "action": "security_policy_update",
+        "node_id": None,
+        "old_value": old_policy,
+        "new_value": new_policy,
+        "reason": payload.reason or "Security policy updated from StructFi Mobile v3.01.",
+    }
+
+    ADMIN_ACTION_LOG.append(audit_entry)
+
+    return {
+        "success": True,
+        "message": "Security policy updated successfully.",
+        "policy": new_policy,
+        "action": audit_entry,
+    }
+
 # -------------------------------------------------------------------
 # Startup
 # -------------------------------------------------------------------
