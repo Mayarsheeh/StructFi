@@ -1142,6 +1142,231 @@ def mobile_admin_update_security_policy(
     }
 
 # -------------------------------------------------------------------
+# Mobile VLAN / Segmentation Admin
+# -------------------------------------------------------------------
+
+VLAN_CONFIG_BY_PROJECT: Dict[int, Dict[str, Any]] = {}
+
+ALLOWED_SEGMENTATION_MODES = {
+    "Standard",
+    "Strict Isolation",
+    "Performance",
+}
+
+ALLOWED_INTER_VLAN_ROUTING = {
+    "Disabled",
+    "Controlled",
+    "Open",
+}
+
+
+class VlanConfigRequest(BaseModel):
+    segmentation_mode: str = "Standard"
+    segmentation_enabled: bool = True
+    default_vlan_id: int = 10
+    guest_vlan_id: int = 20
+    iot_vlan_id: int = 30
+    voice_vlan_id: int = 40
+    isolate_guest_network: bool = True
+    isolate_iot_devices: bool = True
+    inter_vlan_routing: str = "Controlled"
+    qos_enabled: bool = True
+    reason: Optional[str] = None
+
+
+def _default_vlan_config(current_user: AuthenticatedUser) -> Dict[str, Any]:
+    return {
+        "segmentation_mode": "Standard",
+        "segmentation_enabled": True,
+        "default_vlan_id": 10,
+        "guest_vlan_id": 20,
+        "iot_vlan_id": 30,
+        "voice_vlan_id": 40,
+        "isolate_guest_network": True,
+        "isolate_iot_devices": True,
+        "inter_vlan_routing": "Controlled",
+        "qos_enabled": True,
+        "vlans": [
+            {
+                "id": 10,
+                "name": "Corporate",
+                "purpose": "Main company devices",
+                "status": "active",
+            },
+            {
+                "id": 20,
+                "name": "Guest",
+                "purpose": "Visitor internet access",
+                "status": "isolated",
+            },
+            {
+                "id": 30,
+                "name": "IoT",
+                "purpose": "Smart devices and sensors",
+                "status": "restricted",
+            },
+            {
+                "id": 40,
+                "name": "Voice",
+                "purpose": "Voice and real-time traffic",
+                "status": "qos",
+            },
+        ],
+        "organization_id": current_user.organization_id,
+        "organization_name": current_user.organization_name,
+        "project_id": current_user.project_id,
+        "project_name": current_user.project_name,
+        "updated_by": "system",
+        "updated_by_email": None,
+        "updated_at": int(time.time()),
+        "version": "v3.01",
+    }
+
+
+def _get_vlan_config(current_user: AuthenticatedUser) -> Dict[str, Any]:
+    project_id = int(current_user.project_id)
+
+    if project_id not in VLAN_CONFIG_BY_PROJECT:
+        VLAN_CONFIG_BY_PROJECT[project_id] = _default_vlan_config(current_user)
+
+    return VLAN_CONFIG_BY_PROJECT[project_id]
+
+
+def _validate_vlan_id(value: int, label: str) -> None:
+    if value < 1 or value > 4094:
+        raise HTTPException(
+            status_code=400,
+            detail=f"{label} must be between 1 and 4094.",
+        )
+
+
+def _validate_vlan_config(payload: VlanConfigRequest) -> None:
+    if payload.segmentation_mode not in ALLOWED_SEGMENTATION_MODES:
+        raise HTTPException(
+            status_code=400,
+            detail="Unsupported segmentation mode.",
+        )
+
+    if payload.inter_vlan_routing not in ALLOWED_INTER_VLAN_ROUTING:
+        raise HTTPException(
+            status_code=400,
+            detail="Unsupported inter-VLAN routing mode.",
+        )
+
+    _validate_vlan_id(payload.default_vlan_id, "Default VLAN ID")
+    _validate_vlan_id(payload.guest_vlan_id, "Guest VLAN ID")
+    _validate_vlan_id(payload.iot_vlan_id, "IoT VLAN ID")
+    _validate_vlan_id(payload.voice_vlan_id, "Voice VLAN ID")
+
+    vlan_ids = [
+        payload.default_vlan_id,
+        payload.guest_vlan_id,
+        payload.iot_vlan_id,
+        payload.voice_vlan_id,
+    ]
+
+    if len(vlan_ids) != len(set(vlan_ids)):
+        raise HTTPException(
+            status_code=400,
+            detail="VLAN IDs must be unique.",
+        )
+
+
+@app.get("/mobile/admin/vlans/config")
+def mobile_admin_get_vlan_config(
+    current_user: AuthenticatedUser = Depends(get_current_user),
+):
+    _require_network_admin(current_user)
+
+    return {
+        "success": True,
+        "config": _get_vlan_config(current_user),
+    }
+
+
+@app.post("/mobile/admin/vlans/config")
+def mobile_admin_update_vlan_config(
+    payload: VlanConfigRequest,
+    current_user: AuthenticatedUser = Depends(get_current_user),
+):
+    _require_network_admin(current_user)
+    _validate_vlan_config(payload)
+
+    old_config = dict(_get_vlan_config(current_user))
+
+    new_config = {
+        "segmentation_mode": payload.segmentation_mode,
+        "segmentation_enabled": bool(payload.segmentation_enabled),
+        "default_vlan_id": int(payload.default_vlan_id),
+        "guest_vlan_id": int(payload.guest_vlan_id),
+        "iot_vlan_id": int(payload.iot_vlan_id),
+        "voice_vlan_id": int(payload.voice_vlan_id),
+        "isolate_guest_network": bool(payload.isolate_guest_network),
+        "isolate_iot_devices": bool(payload.isolate_iot_devices),
+        "inter_vlan_routing": payload.inter_vlan_routing,
+        "qos_enabled": bool(payload.qos_enabled),
+        "vlans": [
+            {
+                "id": int(payload.default_vlan_id),
+                "name": "Corporate",
+                "purpose": "Main company devices",
+                "status": "active",
+            },
+            {
+                "id": int(payload.guest_vlan_id),
+                "name": "Guest",
+                "purpose": "Visitor internet access",
+                "status": "isolated" if payload.isolate_guest_network else "active",
+            },
+            {
+                "id": int(payload.iot_vlan_id),
+                "name": "IoT",
+                "purpose": "Smart devices and sensors",
+                "status": "restricted" if payload.isolate_iot_devices else "active",
+            },
+            {
+                "id": int(payload.voice_vlan_id),
+                "name": "Voice",
+                "purpose": "Voice and real-time traffic",
+                "status": "qos" if payload.qos_enabled else "active",
+            },
+        ],
+        "organization_id": current_user.organization_id,
+        "organization_name": current_user.organization_name,
+        "project_id": current_user.project_id,
+        "project_name": current_user.project_name,
+        "updated_by": current_user.name,
+        "updated_by_email": current_user.email,
+        "updated_at": int(time.time()),
+        "version": "v3.01",
+    }
+
+    VLAN_CONFIG_BY_PROJECT[int(current_user.project_id)] = new_config
+
+    audit_entry = {
+        "id": len(ADMIN_ACTION_LOG) + 1,
+        "timestamp": int(time.time()),
+        "user_id": current_user.id,
+        "user_email": current_user.email,
+        "organization_id": current_user.organization_id,
+        "project_id": current_user.project_id,
+        "action": "vlan_config_update",
+        "node_id": None,
+        "old_value": old_config,
+        "new_value": new_config,
+        "reason": payload.reason or "VLAN segmentation updated from StructFi Mobile v3.01.",
+    }
+
+    ADMIN_ACTION_LOG.append(audit_entry)
+
+    return {
+        "success": True,
+        "message": "VLAN segmentation updated successfully.",
+        "config": new_config,
+        "action": audit_entry,
+    }
+
+# -------------------------------------------------------------------
 # Startup
 # -------------------------------------------------------------------
 
