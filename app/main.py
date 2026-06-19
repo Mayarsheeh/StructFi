@@ -1367,6 +1367,163 @@ def mobile_admin_update_vlan_config(
     }
 
 # -------------------------------------------------------------------
+# Mobile Reports Admin
+# -------------------------------------------------------------------
+
+REPORT_EXPORTS_BY_PROJECT: Dict[int, List[Dict[str, Any]]] = {}
+
+ALLOWED_REPORT_TYPES = {
+    "Executive Summary",
+    "Security Report",
+    "WiFi Report",
+    "VLAN Segmentation Report",
+    "Full Network Report",
+}
+
+ALLOWED_REPORT_FORMATS = {
+    "PDF",
+    "CSV",
+    "JSON",
+}
+
+
+class ReportExportRequest(BaseModel):
+    report_type: str = "Executive Summary"
+    report_format: str = "PDF"
+    include_actions: bool = True
+    include_nodes: bool = True
+    reason: Optional[str] = None
+
+
+def _validate_report_request(payload: ReportExportRequest) -> None:
+    if payload.report_type not in ALLOWED_REPORT_TYPES:
+        raise HTTPException(
+            status_code=400,
+            detail="Unsupported report type.",
+        )
+
+    if payload.report_format not in ALLOWED_REPORT_FORMATS:
+        raise HTTPException(
+            status_code=400,
+            detail="Unsupported report format.",
+        )
+
+
+def _get_project_admin_actions(current_user: AuthenticatedUser) -> List[Dict[str, Any]]:
+    return [
+        action
+        for action in ADMIN_ACTION_LOG
+        if int(action.get("project_id", -1)) == int(current_user.project_id)
+    ]
+
+
+@app.get("/mobile/admin/reports/summary")
+def mobile_admin_get_reports_summary(
+    current_user: AuthenticatedUser = Depends(get_current_user),
+):
+    _require_network_admin(current_user)
+
+    project_actions = _get_project_admin_actions(current_user)
+    recent_actions = project_actions[-8:][::-1]
+
+    exports = REPORT_EXPORTS_BY_PROJECT.get(
+        int(current_user.project_id),
+        [],
+    )
+
+    return {
+        "success": True,
+        "summary": {
+            "organization_id": current_user.organization_id,
+            "organization_name": current_user.organization_name,
+            "project_id": current_user.project_id,
+            "project_name": current_user.project_name,
+            "available_reports": [
+                "Executive Summary",
+                "Security Report",
+                "WiFi Report",
+                "VLAN Segmentation Report",
+                "Full Network Report",
+            ],
+            "available_formats": [
+                "PDF",
+                "CSV",
+                "JSON",
+            ],
+            "total_admin_actions": len(project_actions),
+            "total_exports": len(exports),
+            "last_export": exports[-1] if exports else None,
+            "recent_actions": recent_actions,
+            "version": "v3.01",
+            "updated_at": int(time.time()),
+        },
+    }
+
+
+@app.post("/mobile/admin/reports/export")
+def mobile_admin_export_report(
+    payload: ReportExportRequest,
+    current_user: AuthenticatedUser = Depends(get_current_user),
+):
+    _require_network_admin(current_user)
+    _validate_report_request(payload)
+
+    project_id = int(current_user.project_id)
+
+    if project_id not in REPORT_EXPORTS_BY_PROJECT:
+        REPORT_EXPORTS_BY_PROJECT[project_id] = []
+
+    export_entry = {
+        "id": len(REPORT_EXPORTS_BY_PROJECT[project_id]) + 1,
+        "timestamp": int(time.time()),
+        "report_type": payload.report_type,
+        "report_format": payload.report_format,
+        "include_actions": bool(payload.include_actions),
+        "include_nodes": bool(payload.include_nodes),
+        "status": "generated",
+        "file_name": (
+            payload.report_type.lower()
+            .replace(" ", "_")
+            .replace("/", "_")
+            + f"_{int(time.time())}.{payload.report_format.lower()}"
+        ),
+        "generated_by": current_user.name,
+        "generated_by_email": current_user.email,
+        "organization_id": current_user.organization_id,
+        "organization_name": current_user.organization_name,
+        "project_id": current_user.project_id,
+        "project_name": current_user.project_name,
+        "version": "v3.01",
+    }
+
+    REPORT_EXPORTS_BY_PROJECT[project_id].append(export_entry)
+
+    audit_entry = {
+        "id": len(ADMIN_ACTION_LOG) + 1,
+        "timestamp": int(time.time()),
+        "user_id": current_user.id,
+        "user_email": current_user.email,
+        "organization_id": current_user.organization_id,
+        "organization_name": current_user.organization_name,
+        "project_id": current_user.project_id,
+        "project_name": current_user.project_name,
+        "action": "report_export_request",
+        "node_id": None,
+        "old_value": None,
+        "new_value": export_entry,
+        "reason": payload.reason or "Report export requested from StructFi Mobile v3.01.",
+    }
+
+    ADMIN_ACTION_LOG.append(audit_entry)
+
+    return {
+        "success": True,
+        "message": "Report generated successfully.",
+        "export": export_entry,
+        "action": audit_entry,
+    }
+
+# -------------------------------------------------------------------
 # Startup
 # -------------------------------------------------------------------
 
