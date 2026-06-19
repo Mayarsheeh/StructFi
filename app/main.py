@@ -758,7 +758,217 @@ def mobile_admin_actions(
         "actions": list(reversed(actions[-50:])),
     }
 
+# -------------------------------------------------------------------
+# Mobile WiFi / SSID Admin Control
+# -------------------------------------------------------------------
 
+WIFI_CONFIG_BY_PROJECT: Dict[int, Dict[str, Any]] = {}
+
+ALLOWED_WIFI_SECURITY_MODES = {
+    "WPA2/WPA3 Personal",
+    "WPA3 Personal",
+    "WPA2 Enterprise",
+    "Open Network",
+}
+
+ALLOWED_WIFI_BAND_MODES = {
+    "Dual Band",
+    "5GHz Only",
+    "2.4GHz Only",
+}
+
+ALLOWED_WIFI_CHANNEL_MODES = {
+    "Auto Optimized",
+    "Manual",
+    "AI Recommended",
+}
+
+ALLOWED_CLIENT_ISOLATION_MODES = {
+    "Enabled",
+    "Disabled",
+}
+
+
+class WifiAdminConfigRequest(BaseModel):
+    ssid: str
+    security_mode: str
+    password: Optional[str] = None
+    band_mode: str = "Dual Band"
+    channel_mode: str = "Auto Optimized"
+    guest_network_enabled: bool = True
+    guest_ssid: Optional[str] = None
+    band_steering_enabled: bool = True
+    fast_roaming_enabled: bool = True
+    client_isolation: str = "Enabled"
+    reason: Optional[str] = None
+
+
+def _default_wifi_config(current_user: AuthenticatedUser) -> Dict[str, Any]:
+    return {
+        "ssid": "StructFi-Secure",
+        "security_mode": "WPA2/WPA3 Personal",
+        "password": "StructFi@v301",
+        "band_mode": "Dual Band",
+        "channel_mode": "Auto Optimized",
+        "guest_network_enabled": True,
+        "guest_ssid": "StructFi-Guest",
+        "band_steering_enabled": True,
+        "fast_roaming_enabled": True,
+        "client_isolation": "Enabled",
+        "organization_id": current_user.organization_id,
+        "organization_name": current_user.organization_name,
+        "project_id": current_user.project_id,
+        "project_name": current_user.project_name,
+        "updated_by": "system",
+        "updated_by_email": None,
+        "updated_at": int(time.time()),
+        "version": "v3.01",
+    }
+
+
+def _get_wifi_config(current_user: AuthenticatedUser) -> Dict[str, Any]:
+    project_id = int(current_user.project_id)
+
+    if project_id not in WIFI_CONFIG_BY_PROJECT:
+        WIFI_CONFIG_BY_PROJECT[project_id] = _default_wifi_config(current_user)
+
+    return WIFI_CONFIG_BY_PROJECT[project_id]
+
+
+def _validate_wifi_config(payload: WifiAdminConfigRequest) -> None:
+    ssid = payload.ssid.strip()
+
+    if not ssid:
+        raise HTTPException(status_code=400, detail="SSID name is required.")
+
+    if len(ssid) < 3:
+        raise HTTPException(
+            status_code=400,
+            detail="SSID name must be at least 3 characters.",
+        )
+
+    if len(ssid) > 32:
+        raise HTTPException(
+            status_code=400,
+            detail="SSID name must not exceed 32 characters.",
+        )
+
+    if payload.security_mode not in ALLOWED_WIFI_SECURITY_MODES:
+        raise HTTPException(
+            status_code=400,
+            detail="Unsupported WiFi security mode.",
+        )
+
+    if payload.band_mode not in ALLOWED_WIFI_BAND_MODES:
+        raise HTTPException(
+            status_code=400,
+            detail="Unsupported WiFi band mode.",
+        )
+
+    if payload.channel_mode not in ALLOWED_WIFI_CHANNEL_MODES:
+        raise HTTPException(
+            status_code=400,
+            detail="Unsupported WiFi channel mode.",
+        )
+
+    if payload.client_isolation not in ALLOWED_CLIENT_ISOLATION_MODES:
+        raise HTTPException(
+            status_code=400,
+            detail="Unsupported client isolation mode.",
+        )
+
+    if payload.security_mode != "Open Network":
+        password = payload.password or ""
+
+        if len(password) < 8:
+            raise HTTPException(
+                status_code=400,
+                detail="WiFi password must be at least 8 characters unless the network is open.",
+            )
+
+    if payload.guest_network_enabled:
+        guest_ssid = (payload.guest_ssid or "").strip()
+
+        if not guest_ssid:
+            raise HTTPException(
+                status_code=400,
+                detail="Guest SSID is required when guest network is enabled.",
+            )
+
+        if len(guest_ssid) > 32:
+            raise HTTPException(
+                status_code=400,
+                detail="Guest SSID must not exceed 32 characters.",
+            )
+
+
+@app.get("/mobile/admin/wifi/config")
+def mobile_admin_get_wifi_config(
+    current_user: AuthenticatedUser = Depends(get_current_user),
+):
+    _require_network_admin(current_user)
+
+    return {
+        "success": True,
+        "config": _get_wifi_config(current_user),
+    }
+
+
+@app.post("/mobile/admin/wifi/config")
+def mobile_admin_update_wifi_config(
+    payload: WifiAdminConfigRequest,
+    current_user: AuthenticatedUser = Depends(get_current_user),
+):
+    _require_network_admin(current_user)
+    _validate_wifi_config(payload)
+
+    old_config = dict(_get_wifi_config(current_user))
+
+    new_config = {
+        "ssid": payload.ssid.strip(),
+        "security_mode": payload.security_mode,
+        "password": payload.password or "",
+        "band_mode": payload.band_mode,
+        "channel_mode": payload.channel_mode,
+        "guest_network_enabled": bool(payload.guest_network_enabled),
+        "guest_ssid": (payload.guest_ssid or "").strip(),
+        "band_steering_enabled": bool(payload.band_steering_enabled),
+        "fast_roaming_enabled": bool(payload.fast_roaming_enabled),
+        "client_isolation": payload.client_isolation,
+        "organization_id": current_user.organization_id,
+        "organization_name": current_user.organization_name,
+        "project_id": current_user.project_id,
+        "project_name": current_user.project_name,
+        "updated_by": current_user.name,
+        "updated_by_email": current_user.email,
+        "updated_at": int(time.time()),
+        "version": "v3.01",
+    }
+
+    WIFI_CONFIG_BY_PROJECT[int(current_user.project_id)] = new_config
+
+    audit_entry = {
+        "id": len(ADMIN_ACTION_LOG) + 1,
+        "timestamp": int(time.time()),
+        "user_id": current_user.id,
+        "user_email": current_user.email,
+        "organization_id": current_user.organization_id,
+        "project_id": current_user.project_id,
+        "action": "wifi_config_update",
+        "node_id": None,
+        "old_value": old_config,
+        "new_value": new_config,
+        "reason": payload.reason or "WiFi configuration updated from StructFi Mobile v3.01.",
+    }
+
+    ADMIN_ACTION_LOG.append(audit_entry)
+
+    return {
+        "success": True,
+        "message": "WiFi configuration updated successfully.",
+        "config": new_config,
+        "action": audit_entry,
+    }
 
 # -------------------------------------------------------------------
 # Startup
