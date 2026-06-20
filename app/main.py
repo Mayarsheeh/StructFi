@@ -492,12 +492,115 @@ def _current_images() -> Dict[str, Optional[Dict[str, Any]]]:
     }
 
 
+def _critical_alert_step_interval() -> int:
+    raw_interval = os.getenv("CRITICAL_ALERT_STEP_INTERVAL", "5")
+
+    try:
+        interval = int(raw_interval)
+    except Exception:
+        interval = 5
+
+    return max(1, interval)
+
+
+def _build_periodic_critical_alert(step: int, state: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    if step <= 0 or step % _critical_alert_step_interval() != 0:
+        return None
+
+    runtime_nodes = state.get("node_runtime", []) or []
+    clients = state.get("clients", []) or []
+    target_node = runtime_nodes[0] if runtime_nodes and isinstance(runtime_nodes[0], dict) else {}
+
+    node_id = target_node.get("id") or target_node.get("node_id")
+    node_name = target_node.get("name", "primary runtime node")
+
+    return {
+        "id": 900000 + step,
+        "severity": "critical",
+        "title": f"Critical IDS event at simulation step {step}",
+        "description": (
+            f"Periodic demo-critical alert generated at step {step} to validate "
+            "dashboard, mobile, and IDS escalation visibility."
+        ),
+        "node_id": node_id,
+        "client_id": None,
+        "policy_id": "periodic-critical-demo",
+        "category": "ids_periodic_critical",
+        "evidence": {
+            "step": step,
+            "interval": _critical_alert_step_interval(),
+            "node_name": node_name,
+            "runtime_nodes": len(runtime_nodes) if isinstance(runtime_nodes, list) else 0,
+            "clients": len(clients) if isinstance(clients, list) else 0,
+        },
+        "recommendation": "Investigate the affected node, review client sessions, and confirm IDS escalation handling.",
+    }
+
+
+def _state_with_periodic_critical_alert(state: Dict[str, Any]) -> Dict[str, Any]:
+    if not isinstance(state, dict):
+        return {}
+
+    state = dict(state)
+    runtime_nodes = state.get("node_runtime", []) or []
+    if not runtime_nodes:
+        return state
+
+    try:
+        step = int(state.get("step", 0) or 0)
+    except Exception:
+        step = 0
+
+    security_state = dict(state.get("security_state") or {})
+    alerts = list(security_state.get("alerts", []) or [])
+
+    interval = _critical_alert_step_interval()
+    periodic_alerts = [
+        alert
+        for milestone in range(interval, step + 1, interval)
+        for alert in [_build_periodic_critical_alert(milestone, state)]
+        if alert is not None
+    ]
+
+    for periodic_alert in periodic_alerts:
+        alert_id = periodic_alert.get("id")
+        has_alert = any(isinstance(alert, dict) and alert.get("id") == alert_id for alert in alerts)
+        if not has_alert:
+            alerts.append(periodic_alert)
+
+    security_state["alerts"] = alerts
+    state["security_state"] = security_state
+
+    ai_output = dict(state.get("ai_output") or {})
+    health_summary = dict(ai_output.get("health_summary") or {})
+    critical_count = sum(
+        1
+        for alert in alerts
+        if isinstance(alert, dict) and str(alert.get("severity", "")).lower() == "critical"
+    )
+    warning_count = sum(
+        1
+        for alert in alerts
+        if isinstance(alert, dict) and str(alert.get("severity", "")).lower() == "warning"
+    )
+
+    health_summary["critical_alerts"] = critical_count
+    health_summary["warning_alerts"] = warning_count
+    if critical_count > 0:
+        health_summary["status"] = "critical"
+
+    ai_output["health_summary"] = health_summary
+    state["ai_output"] = ai_output
+
+    return state
+
+
 def _state_dict() -> Dict[str, Any]:
     try:
         state = simulator.get_state()
         if isinstance(state, dict):
-            return state
-        return _model_to_dict(state) or {}
+            return _state_with_periodic_critical_alert(state)
+        return _state_with_periodic_critical_alert(_model_to_dict(state) or {})
     except Exception:
         return {}
 
@@ -1649,7 +1752,7 @@ def simulation_summary():
 def simulation_step():
     _auto_apply_latest_plan_if_state_empty()
     simulator.step()
-    return simulator.get_state()
+    return _state_dict()
 
 
 @app.post("/simulation/run-steps/{steps}")
@@ -1658,7 +1761,7 @@ def simulation_run_steps(steps: int):
     steps = max(1, min(int(steps), 100))
     for _ in range(steps):
         simulator.step()
-    return simulator.get_state()
+    return _state_dict()
 
 
 @app.post("/simulation/reset")

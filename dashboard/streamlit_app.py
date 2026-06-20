@@ -1,6 +1,7 @@
 import os
 import json
 import time
+import html
 
 import requests
 import streamlit as st
@@ -147,6 +148,17 @@ st.markdown("""
         min-height: 126px;
     }
 
+    .card.metric-critical {
+        border: 1px solid rgba(255, 59, 48, 0.24);
+        background: linear-gradient(145deg, rgba(255,255,255,0.94), rgba(255,241,240,0.86));
+        box-shadow: 0 16px 34px rgba(255,59,48,0.10);
+    }
+
+    .card.metric-live {
+        border: 1px solid rgba(52, 199, 89, 0.22);
+        background: linear-gradient(145deg, rgba(255,255,255,0.94), rgba(239,253,244,0.86));
+    }
+
     .metric-title {
         font-size: 0.84rem;
         color: var(--sf-muted);
@@ -171,6 +183,120 @@ st.markdown("""
         color: var(--sf-text);
         margin: 18px 0 12px;
         letter-spacing: -0.45px;
+    }
+
+    .status-strip {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 12px;
+        margin: 14px 0 2px;
+    }
+
+    .status-tile {
+        background: rgba(255,255,255,0.76);
+        border: 1px solid var(--sf-border);
+        border-radius: 22px;
+        padding: 15px 16px;
+        box-shadow: var(--sf-shadow-soft);
+    }
+
+    .status-tile b {
+        display: block;
+        color: var(--sf-text);
+        font-size: 1.5rem;
+        line-height: 1;
+        letter-spacing: -0.8px;
+    }
+
+    .status-tile span {
+        display: block;
+        margin-top: 7px;
+        color: var(--sf-muted);
+        font-size: 0.82rem;
+        font-weight: 800;
+    }
+
+    .status-tile.critical {
+        border-color: rgba(255, 59, 48, 0.25);
+        background: linear-gradient(145deg, rgba(255,255,255,0.94), rgba(255,241,240,0.90));
+    }
+
+    .status-tile.warning {
+        border-color: rgba(255, 159, 10, 0.25);
+        background: linear-gradient(145deg, rgba(255,255,255,0.94), rgba(255,248,235,0.90));
+    }
+
+    .critical-banner {
+        margin: 14px 0 4px;
+        padding: 16px 18px;
+        border-radius: 24px;
+        color: #7f1d1d;
+        background: linear-gradient(135deg, rgba(255,235,235,0.96), rgba(255,247,237,0.92));
+        border: 1px solid rgba(255,59,48,0.24);
+        box-shadow: 0 14px 34px rgba(255,59,48,0.10);
+        font-weight: 800;
+    }
+
+    .alert-card {
+        border-radius: 22px;
+        padding: 16px 18px;
+        margin-bottom: 12px;
+        border: 1px solid var(--sf-border);
+        background: rgba(255,255,255,0.78);
+        box-shadow: 0 8px 22px rgba(0,0,0,0.05);
+    }
+
+    .alert-card.alert-critical {
+        border-color: rgba(255, 59, 48, 0.28);
+        background: linear-gradient(145deg, rgba(255,255,255,0.96), rgba(255,241,240,0.92));
+    }
+
+    .alert-card.alert-warning {
+        border-color: rgba(255, 159, 10, 0.28);
+        background: linear-gradient(145deg, rgba(255,255,255,0.96), rgba(255,248,235,0.92));
+    }
+
+    .alert-title {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin-bottom: 7px;
+        color: var(--sf-text);
+        font-weight: 900;
+    }
+
+    .alert-meta {
+        margin-top: 10px;
+        color: var(--sf-muted);
+        font-size: 0.82rem;
+        font-weight: 750;
+    }
+
+    .severity-chip {
+        display: inline-block;
+        padding: 5px 9px;
+        border-radius: 999px;
+        font-size: 0.72rem;
+        letter-spacing: 0.2px;
+        font-weight: 900;
+    }
+
+    .severity-critical {
+        color: #b42318;
+        background: rgba(255,59,48,0.14);
+        border: 1px solid rgba(255,59,48,0.20);
+    }
+
+    .severity-warning {
+        color: #a36200;
+        background: rgba(255,159,10,0.16);
+        border: 1px solid rgba(255,159,10,0.22);
+    }
+
+    .severity-info {
+        color: #005ecb;
+        background: rgba(0,122,255,0.12);
+        border: 1px solid rgba(0,122,255,0.18);
     }
 
     .subtle {
@@ -305,6 +431,22 @@ st.markdown("""
     pre, code {
         border-radius: 18px !important;
     }
+
+    @media (max-width: 980px) {
+        .status-strip {
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+
+        .hero h1 {
+            font-size: 2.2rem;
+        }
+    }
+
+    @media (max-width: 640px) {
+        .status-strip {
+            grid-template-columns: 1fr;
+        }
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -420,6 +562,62 @@ def get_sim_state():
 
 def get_rendered_url(file_name):
     return f"{API_URL}/cad/rendered/{file_name}"
+
+
+def _html(value) -> str:
+    if value is None:
+        return ""
+    return html.escape(str(value))
+
+
+def _alert_severity(alert) -> str:
+    if not isinstance(alert, dict):
+        return "info"
+    severity = str(alert.get("severity", "info")).lower()
+    return severity if severity in ["critical", "warning", "info"] else "info"
+
+
+def _count_alerts_by_severity(alerts):
+    counts = {"critical": 0, "warning": 0, "info": 0}
+
+    for alert in alerts or []:
+        severity = _alert_severity(alert)
+        counts[severity] = counts.get(severity, 0) + 1
+
+    return counts
+
+
+def _render_alert_card(alert):
+    if not isinstance(alert, dict):
+        return
+
+    severity = _alert_severity(alert)
+    css_class = f"alert-{severity}"
+    chip_class = f"severity-{severity}"
+    title = _html(alert.get("title", "Untitled alert"))
+    description = _html(alert.get("description", ""))
+    category = _html(alert.get("category", "unknown"))
+    node_id = _html(alert.get("node_id", "-"))
+    client_id = _html(alert.get("client_id", "-"))
+    recommendation = _html(alert.get("recommendation", ""))
+
+    recommendation_html = ""
+    if recommendation:
+        recommendation_html = f"<div class='alert-meta'>Recommendation: {recommendation}</div>"
+
+    st.markdown(f"""
+    <div class="alert-card {css_class}">
+        <div class="alert-title">
+            <span class="severity-chip {chip_class}">{severity.upper()}</span>
+            <span>{title}</span>
+        </div>
+        <div class="subtle">{description}</div>
+        <div class="alert-meta">
+            Category: {category} &nbsp; | &nbsp; Node: {node_id} &nbsp; | &nbsp; Client: {client_id}
+        </div>
+        {recommendation_html}
+    </div>
+    """, unsafe_allow_html=True)
 
 
 
@@ -1090,7 +1288,6 @@ with st.sidebar:
         result = upload_cad(uploaded_cad)
         if result.get("cad"):
             st.session_state.extracted_img = None
-            st.session_state.extracted_img = None
             st.session_state.plan_img = None
             st.session_state.heatmap_img = None
             st.session_state.simulation_runtime_active = False
@@ -1225,7 +1422,7 @@ if not building_data and latest_rooms:
 
 plan_nodes_list = _dashboard_plan_nodes(latest_plan)
 node_runtime_raw = sim_state.get("node_runtime", []) or []
-simulation_is_active = bool(st.session_state.get("simulation_runtime_active", False))
+simulation_is_active = bool(st.session_state.get("simulation_runtime_active", False) or node_runtime_raw)
 security_state = sim_state.get("security_state", {}) or {}
 
 if simulation_is_active:
@@ -1245,6 +1442,10 @@ controller_state = sim_state.get("controller_state", {}) or {}
 decisions = (controller_state.get("decisions", []) or []) if simulation_is_active else []
 runtime_events = (sim_state.get("events", []) or []) if simulation_is_active else []
 summary = latest_plan.get("summary", {}) if latest_plan else {}
+alert_counts = _count_alerts_by_severity(alerts)
+critical_alerts_count = alert_counts.get("critical", 0)
+warning_alerts_count = alert_counts.get("warning", 0)
+info_alerts_count = alert_counts.get("info", 0)
 
 display_sim_state = dict(sim_state or {})
 if not simulation_is_active:
@@ -1312,16 +1513,45 @@ with metric_cols[3]:
     """, unsafe_allow_html=True)
 with metric_cols[4]:
     st.markdown(f"""
-    <div class="card">
+    <div class="card {'metric-live' if simulation_is_active else ''}">
         <div class="metric-title">Clients</div>
         <div class="metric-value">{len(clients)}</div>
     </div>
     """, unsafe_allow_html=True)
 with metric_cols[5]:
     st.markdown(f"""
-    <div class="card">
+    <div class="card {'metric-critical' if critical_alerts_count else ''}">
         <div class="metric-title">Alerts</div>
         <div class="metric-value">{len(alerts)}</div>
+        <div class="subtle">{critical_alerts_count} critical</div>
+    </div>
+    """, unsafe_allow_html=True)
+
+st.markdown(f"""
+<div class="status-strip">
+    <div class="status-tile {'critical' if critical_alerts_count else ''}">
+        <b>{critical_alerts_count}</b>
+        <span>Critical alerts</span>
+    </div>
+    <div class="status-tile {'warning' if warning_alerts_count else ''}">
+        <b>{warning_alerts_count}</b>
+        <span>Warnings</span>
+    </div>
+    <div class="status-tile">
+        <b>{info_alerts_count}</b>
+        <span>Info notices</span>
+    </div>
+    <div class="status-tile">
+        <b>{sim_state.get("step", 0)}</b>
+        <span>Simulation step</span>
+    </div>
+</div>
+""", unsafe_allow_html=True)
+
+if simulation_is_active and critical_alerts_count:
+    st.markdown(f"""
+    <div class="critical-banner">
+        Critical IDS activity detected. The demo-critical generator creates one critical alert every 5 simulation steps.
     </div>
     """, unsafe_allow_html=True)
 
@@ -1475,9 +1705,9 @@ with workflow_tabs[2]:
     with ai_cols[1]:
         st.metric("Anomaly Score", health.get("anomaly_score", 0))
     with ai_cols[2]:
-        st.metric("Critical", health.get("critical_alerts", 0))
+        st.metric("Critical", critical_alerts_count)
     with ai_cols[3]:
-        st.metric("Warnings", health.get("warning_alerts", 0))
+        st.metric("Warnings", warning_alerts_count)
     with ai_cols[4]:
         st.metric("High Load Nodes", health.get("high_load_nodes", 0))
 
@@ -1501,14 +1731,12 @@ with workflow_tabs[2]:
         if not alerts:
             st.info("No security alerts.")
         else:
-            for alert in alerts:
-                st.markdown(f"""
-                <div class="room-card">
-                    <b>{str(alert.get("severity", "info")).upper()}</b> - {alert.get("title", "")}<br>
-                    {alert.get("description", "")}<br>
-                    Category: {alert.get("category", "unknown")}
-                </div>
-                """, unsafe_allow_html=True)
+            sorted_alerts = sorted(
+                alerts,
+                key=lambda item: {"critical": 0, "warning": 1, "info": 2}.get(_alert_severity(item), 3),
+            )
+            for alert in sorted_alerts:
+                _render_alert_card(alert)
 
     st.markdown('<div class="section-title">Controller Decisions</div>', unsafe_allow_html=True)
     if not decisions:
@@ -1584,7 +1812,7 @@ with workflow_tabs[4]:
         <b>Backend base URL</b><br>
         <span class="subtle">{API_URL}</span><br><br>
         <b>Mobile-ready endpoints</b><br>
-        <span class="subtle">/mobile/bootstrap, /mobile/dashboard, /mobile/images, /mobile/nodes, /mobile/clients, /mobile/alerts</span><br><br>
+        <span class="subtle">/mobile/bootstrap, /mobile/dashboard, /mobile/images, /mobile/nodes, /mobile/clients, /mobile/alerts, /mobile/simulation, /mobile/reports</span><br><br>
         <b>Router / Security endpoints</b><br>
         <span class="subtle">/router/config, /network/vlans, /network/ssids, /security/policies, /ids/rules</span>
     </div>
