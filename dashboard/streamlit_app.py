@@ -40,7 +40,7 @@ st.set_page_config(
     page_title="StructiFi CAD Command Center",
     page_icon="S",
     layout="wide",
-    initial_sidebar_state="expanded"
+    initial_sidebar_state="collapsed"
 )
 
 st.markdown("""
@@ -1767,32 +1767,6 @@ def _handle_full_project_reset() -> None:
     st.error(result.get("detail", "Full reset failed."))
 
 
-with st.sidebar:
-    st.markdown("## StructFi Console")
-    st.caption("System controls and playback settings.")
-
-    st.markdown(f"""
-    <div class="sidebar-status">
-        <b>Backend</b>
-        <span>{_html(API_URL)}</span>
-    </div>
-    """, unsafe_allow_html=True)
-
-    st.markdown("#### Playback")
-    st.session_state.auto_simulation_enabled = st.checkbox(
-        "Auto-run simulation steps",
-        value=bool(st.session_state.get("auto_simulation_enabled", False)),
-        help="When enabled, the dashboard advances one simulation tick repeatedly to mimic real-time operation.",
-    )
-    st.session_state.auto_simulation_interval = st.slider(
-        "Step interval (seconds)",
-        min_value=0.5,
-        max_value=3.0,
-        value=float(st.session_state.get("auto_simulation_interval", 1.0)),
-        step=0.5,
-    )
-
-
 latest_cad = get_latest_cad()
 latest_rooms = get_latest_rooms()
 latest_plan = get_latest_plan()
@@ -1856,77 +1830,513 @@ placement = _dashboard_metric_number(
     0,
 )
 
-st.markdown(f"""
-<div class="hero">
-    <div>
-        <div class="hero-kicker"><span class="live-dot"></span> Enterprise Wi-Fi Simulation OS</div>
-        <h1>StructFi Command Center</h1>
-        <p>
-            A polished operations dashboard for CAD extraction, AI access-point planning,
-            RF validation, live client simulation, IDS monitoring, and mobile-ready backend control.
-        </p>
-        <div class="workflow-pill">Upload -> Extract -> Plan -> Visualize -> Simulate -> Monitor -> Export</div>
-    </div>
-    <div class="hero-visual">
-        <div class="visual-stat">Network runtime<b>{len(clients)}</b><span>active clients</span></div>
-        <div class="visual-node main">AP</div>
-        <div class="visual-node secondary">IDS</div>
-    </div>
-</div>
+st.markdown("""
+<style>
+    section[data-testid="stSidebar"] {
+        display: none !important;
+    }
+
+    .block-container {
+        max-width: 1480px;
+        padding: 1rem 1.3rem 1.8rem;
+    }
+
+    div[data-testid="stHorizontalBlock"] {
+        gap: 1rem;
+        flex-wrap: wrap;
+        align-items: stretch;
+    }
+
+    div[data-testid="column"] {
+        min-width: min(100%, 250px);
+        flex: 1 1 250px !important;
+    }
+
+    .sf-topbar {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 16px;
+        margin: 2px 0 16px;
+        padding: 12px 14px;
+        border: 1px solid rgba(15,23,42,0.08);
+        border-radius: 22px;
+        background: rgba(255,255,255,0.76);
+        box-shadow: 0 12px 34px rgba(15,23,42,0.07);
+        backdrop-filter: blur(22px);
+    }
+
+    .sf-brand {
+        display: flex;
+        align-items: center;
+        gap: 11px;
+        min-width: 0;
+    }
+
+    .sf-mark {
+        width: 38px;
+        height: 38px;
+        border-radius: 13px;
+        display: grid;
+        place-items: center;
+        color: white;
+        font-weight: 950;
+        background: linear-gradient(135deg, #0a84ff, #1d4ed8);
+        box-shadow: 0 12px 24px rgba(37,99,235,0.25);
+    }
+
+    .sf-brand-title {
+        color: #0f172a;
+        font-size: 1rem;
+        font-weight: 950;
+        line-height: 1.05;
+    }
+
+    .sf-brand-sub {
+        color: #64748b;
+        font-size: 0.76rem;
+        font-weight: 800;
+        margin-top: 2px;
+    }
+
+    .sf-top-pills {
+        display: flex;
+        justify-content: flex-end;
+        gap: 8px;
+        flex-wrap: wrap;
+    }
+
+    .sf-pill {
+        display: inline-flex;
+        align-items: center;
+        gap: 7px;
+        padding: 8px 10px;
+        border-radius: 999px;
+        background: rgba(248,250,252,0.88);
+        border: 1px solid rgba(15,23,42,0.08);
+        color: #334155;
+        font-size: 0.78rem;
+        font-weight: 900;
+        white-space: nowrap;
+    }
+
+    .sf-dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 99px;
+        background: #16a34a;
+        box-shadow: 0 0 0 6px rgba(22,163,74,0.10);
+    }
+
+    .sf-dot.warn {
+        background: #f59e0b;
+        box-shadow: 0 0 0 6px rgba(245,158,11,0.12);
+    }
+
+    .sf-hero-pro {
+        position: relative;
+        overflow: hidden;
+        display: grid;
+        grid-template-columns: minmax(0, 1.25fr) minmax(280px, 0.75fr);
+        gap: 22px;
+        align-items: stretch;
+        padding: clamp(20px, 3vw, 34px);
+        border-radius: 32px;
+        background:
+            linear-gradient(135deg, rgba(255,255,255,0.96), rgba(242,247,255,0.90)),
+            radial-gradient(circle at 90% 10%, rgba(10,132,255,0.20), transparent 34%);
+        border: 1px solid rgba(255,255,255,0.92);
+        box-shadow: 0 28px 80px rgba(15,23,42,0.12);
+        animation: sfFadeUp .42s ease both;
+    }
+
+    .sf-eyebrow {
+        width: fit-content;
+        padding: 8px 12px;
+        border-radius: 999px;
+        background: rgba(10,132,255,0.10);
+        color: #0758bf;
+        border: 1px solid rgba(10,132,255,0.16);
+        font-size: 0.76rem;
+        font-weight: 950;
+        letter-spacing: 0.2px;
+        text-transform: uppercase;
+    }
+
+    .sf-hero-pro h1 {
+        margin: 16px 0 10px;
+        color: #0f172a;
+        max-width: 820px;
+        font-size: clamp(2.25rem, 4.8vw, 5rem);
+        line-height: 0.94;
+        letter-spacing: -3px;
+        font-weight: 950;
+    }
+
+    .sf-hero-pro p {
+        max-width: 780px;
+        color: #64748b;
+        font-size: 1.02rem;
+        line-height: 1.58;
+        font-weight: 700;
+    }
+
+    .sf-mini-map {
+        position: relative;
+        min-height: 260px;
+        border-radius: 26px;
+        overflow: hidden;
+        color: white;
+        background:
+            linear-gradient(135deg, rgba(15,23,42,0.96), rgba(30,64,175,0.88)),
+            radial-gradient(circle at 82% 8%, rgba(96,165,250,0.35), transparent 35%);
+        border: 1px solid rgba(15,23,42,0.10);
+    }
+
+    .sf-mini-map::before {
+        content: "";
+        position: absolute;
+        inset: 18px;
+        border-radius: 20px;
+        border: 1px solid rgba(255,255,255,0.13);
+        background:
+            linear-gradient(rgba(255,255,255,0.06) 1px, transparent 1px),
+            linear-gradient(90deg, rgba(255,255,255,0.06) 1px, transparent 1px);
+        background-size: 32px 32px;
+    }
+
+    .sf-mini-map::after {
+        content: "";
+        position: absolute;
+        top: 24px;
+        bottom: 24px;
+        width: 120px;
+        background: linear-gradient(90deg, transparent, rgba(255,255,255,0.18), transparent);
+        animation: sfScan 4.2s ease-in-out infinite;
+    }
+
+    .sf-map-stat {
+        position: absolute;
+        z-index: 2;
+        left: 24px;
+        top: 24px;
+        color: rgba(255,255,255,0.72);
+        font-size: 0.78rem;
+        font-weight: 900;
+    }
+
+    .sf-map-stat b {
+        display: block;
+        margin-top: 6px;
+        color: #fff;
+        font-size: 2.6rem;
+        letter-spacing: -1.4px;
+    }
+
+    .sf-map-chip {
+        position: absolute;
+        z-index: 2;
+        right: 22px;
+        bottom: 22px;
+        padding: 10px 12px;
+        border-radius: 16px;
+        background: rgba(255,255,255,0.12);
+        border: 1px solid rgba(255,255,255,0.16);
+        backdrop-filter: blur(14px);
+        font-size: 0.8rem;
+        font-weight: 900;
+    }
+
+    .sf-node {
+        position: absolute;
+        z-index: 2;
+        width: 64px;
+        height: 64px;
+        display: grid;
+        place-items: center;
+        border-radius: 20px;
+        background: rgba(255,255,255,0.13);
+        border: 1px solid rgba(255,255,255,0.20);
+        backdrop-filter: blur(16px);
+        color: #fff;
+        font-weight: 950;
+    }
+
+    .sf-node.a { right: 32px; top: 32px; background: rgba(10,132,255,0.42); }
+    .sf-node.b { left: 36px; bottom: 36px; }
+
+    .sf-kpi-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+        gap: 14px;
+        margin: 16px 0;
+    }
+
+    .sf-kpi {
+        min-height: 112px;
+        padding: 18px;
+        border-radius: 24px;
+        background: rgba(255,255,255,0.82);
+        border: 1px solid rgba(255,255,255,0.92);
+        box-shadow: 0 18px 44px rgba(15,23,42,0.08);
+        transition: transform .18s ease, box-shadow .18s ease;
+    }
+
+    .sf-kpi:hover {
+        transform: translateY(-4px);
+        box-shadow: 0 26px 58px rgba(15,23,42,0.12);
+    }
+
+    .sf-kpi.danger {
+        background: linear-gradient(145deg, rgba(255,255,255,0.92), rgba(255,241,240,0.94));
+        border-color: rgba(220,38,38,0.20);
+    }
+
+    .sf-kpi.live {
+        background: linear-gradient(145deg, rgba(255,255,255,0.92), rgba(240,253,244,0.94));
+        border-color: rgba(22,163,74,0.18);
+    }
+
+    .sf-kpi span {
+        display: block;
+        color: #64748b;
+        font-size: 0.78rem;
+        font-weight: 950;
+        text-transform: uppercase;
+        letter-spacing: 0.28px;
+    }
+
+    .sf-kpi b {
+        display: block;
+        margin-top: 12px;
+        color: #0f172a;
+        font-size: clamp(1.8rem, 3.2vw, 2.65rem);
+        line-height: 0.95;
+        letter-spacing: -1.4px;
+    }
+
+    .sf-kpi small {
+        display: block;
+        margin-top: 10px;
+        color: #64748b;
+        font-size: 0.82rem;
+        font-weight: 800;
+    }
+
+    .sf-section-head {
+        display: flex;
+        justify-content: space-between;
+        align-items: end;
+        gap: 16px;
+        margin: 18px 0 10px;
+    }
+
+    .sf-section-head h2 {
+        margin: 0;
+        color: #0f172a;
+        font-size: 1.25rem;
+        letter-spacing: -0.6px;
+    }
+
+    .sf-section-head p {
+        margin: 4px 0 0;
+        color: #64748b;
+        font-size: 0.88rem;
+        font-weight: 750;
+    }
+
+    div[data-testid="stVerticalBlockBorderWrapper"] {
+        border-radius: 24px !important;
+        border: 1px solid rgba(15,23,42,0.08) !important;
+        background: rgba(255,255,255,0.82) !important;
+        box-shadow: 0 16px 42px rgba(15,23,42,0.08) !important;
+        backdrop-filter: blur(20px);
+    }
+
+    .command-section-title {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin-bottom: 12px;
+        color: #0f172a;
+        font-size: 0.92rem;
+        font-weight: 950;
+        letter-spacing: -0.1px;
+    }
+
+    .command-section-title::before {
+        content: "";
+        width: 9px;
+        height: 9px;
+        border-radius: 999px;
+        background: #0a84ff;
+        box-shadow: 0 0 0 6px rgba(10,132,255,0.10);
+    }
+
+    .stButton > button,
+    .stLinkButton > a {
+        border-radius: 14px !important;
+        min-height: 43px !important;
+        font-weight: 950 !important;
+        letter-spacing: -0.1px !important;
+    }
+
+    .stButton > button {
+        background: linear-gradient(180deg, #0f8cff, #006ee6) !important;
+        color: #fff !important;
+        border: 1px solid rgba(10,132,255,0.30) !important;
+        box-shadow: 0 12px 24px rgba(10,132,255,0.20) !important;
+    }
+
+    .stLinkButton > a {
+        background: #0f172a !important;
+        color: #fff !important;
+        border: 1px solid rgba(15,23,42,0.18) !important;
+    }
+
+    .stTabs [data-baseweb="tab-list"] {
+        top: 8px !important;
+        border-radius: 20px !important;
+        padding: 8px !important;
+        background: rgba(255,255,255,0.88) !important;
+        border: 1px solid rgba(15,23,42,0.08) !important;
+        box-shadow: 0 16px 42px rgba(15,23,42,0.08) !important;
+    }
+
+    .stTabs [aria-selected="true"] {
+        background: #0f172a !important;
+        color: #fff !important;
+    }
+
+    @media (max-width: 880px) {
+        .sf-topbar,
+        .sf-section-head {
+            align-items: flex-start;
+            flex-direction: column;
+        }
+
+        .sf-hero-pro {
+            grid-template-columns: 1fr;
+        }
+
+        .sf-mini-map {
+            min-height: 210px;
+        }
+
+        .sf-hero-pro h1 {
+            letter-spacing: -1.6px;
+        }
+    }
+</style>
 """, unsafe_allow_html=True)
 
-st.markdown("""
-<div class="command-shell">
-    <div class="command-head">
+cad_source_label = _html(latest_cad.get("source_format", "NONE") if latest_cad else "NONE")
+simulation_label = "Live" if simulation_is_active else "Standby"
+simulation_dot_class = "" if simulation_is_active else "warn"
+alert_kpi_class = "danger" if critical_alerts_count else ""
+client_kpi_class = "live" if simulation_is_active else ""
+
+st.markdown(f"""
+<div class="sf-topbar">
+    <div class="sf-brand">
+        <div class="sf-mark">S</div>
         <div>
-            <div class="command-title">Command Console</div>
-            <div class="command-caption">Run the demo from left to right. Upload once, then advance the workflow without leaving the main view.</div>
+            <div class="sf-brand-title">StructFi Command Center</div>
+            <div class="sf-brand-sub">CAD + AI planning + live network simulation</div>
         </div>
     </div>
+    <div class="sf-top-pills">
+        <div class="sf-pill"><span class="sf-dot {simulation_dot_class}"></span>{simulation_label}</div>
+        <div class="sf-pill">Step {sim_state.get("step", 0)}</div>
+        <div class="sf-pill">{_html(API_URL)}</div>
+    </div>
+</div>
+
+<div class="sf-hero-pro">
+    <div>
+        <div class="sf-eyebrow">Enterprise Operations Surface</div>
+        <h1>Plan. Simulate. Monitor.</h1>
+        <p>
+            A clean control surface for turning CAD floorplans into AI placement,
+            RF visuals, runtime clients, IDS alerts, and exportable reports.
+        </p>
+    </div>
+    <div class="sf-mini-map">
+        <div class="sf-map-stat">Live clients<b>{len(clients)}</b></div>
+        <div class="sf-node a">AP</div>
+        <div class="sf-node b">IDS</div>
+        <div class="sf-map-chip">{critical_alerts_count} critical / {warning_alerts_count} warning</div>
+    </div>
+</div>
+
+<div class="sf-kpi-grid">
+    <div class="sf-kpi"><span>CAD Source</span><b>{cad_source_label}</b><small>Uploaded floorplan</small></div>
+    <div class="sf-kpi"><span>Rooms</span><b>{extracted_rooms_count}</b><small>Extracted spaces</small></div>
+    <div class="sf-kpi"><span>AI Nodes</span><b>{suggested_nodes_count}</b><small>Suggested access points</small></div>
+    <div class="sf-kpi"><span>Placement</span><b>{placement}</b><small>Planning score</small></div>
+    <div class="sf-kpi {client_kpi_class}"><span>Clients</span><b>{len(clients)}</b><small>Runtime sessions</small></div>
+    <div class="sf-kpi {alert_kpi_class}"><span>Alerts</span><b>{len(alerts)}</b><small>{critical_alerts_count} critical</small></div>
+</div>
+
+<div class="sf-section-head">
+    <div>
+        <h2>Workflow Deck</h2>
+        <p>Run the demo left to right. Controls stay on the page and wrap cleanly on smaller screens.</p>
+    </div>
 </div>
 """, unsafe_allow_html=True)
 
-upload_col, cad_col, sim_col, export_col = st.columns([1.15, 1.35, 1.15, 0.95])
+upload_col, cad_col, runtime_col, output_col = st.columns([1, 1, 1, 1])
 
 with upload_col:
     with st.container(border=True):
-        st.markdown('<div class="command-section-title">1. Source CAD</div>', unsafe_allow_html=True)
+        st.markdown('<div class="command-section-title">01 Source</div>', unsafe_allow_html=True)
         uploaded_cad = st.file_uploader(
-            "DXF or DWG file",
+            "Upload DXF or DWG",
             type=["dxf", "dwg"],
             key="cad_upload_main",
-            label_visibility="collapsed",
         )
         if st.button("Upload CAD", use_container_width=True, key="action_upload_cad"):
             _handle_upload_cad(uploaded_cad)
 
 with cad_col:
     with st.container(border=True):
-        st.markdown('<div class="command-section-title">2. AI Planning Pipeline</div>', unsafe_allow_html=True)
-        cad_a, cad_b = st.columns(2)
-        with cad_a:
-            if st.button("Extract Rooms", use_container_width=True, key="action_extract_rooms"):
-                _handle_extract_rooms()
-            if st.button("Render Plan", use_container_width=True, key="action_render_plan"):
+        st.markdown('<div class="command-section-title">02 Build</div>', unsafe_allow_html=True)
+        if st.button("Extract Rooms", use_container_width=True, key="action_extract_rooms"):
+            _handle_extract_rooms()
+        if st.button("Run AI Planning", use_container_width=True, key="action_ai_plan"):
+            _handle_ai_planning()
+        visual_a, visual_b = st.columns(2)
+        with visual_a:
+            if st.button("Plan", use_container_width=True, key="action_render_plan"):
                 _handle_render_plan()
-        with cad_b:
-            if st.button("Run AI Planning", use_container_width=True, key="action_ai_plan"):
-                _handle_ai_planning()
-            if st.button("Render Heatmap", use_container_width=True, key="action_heatmap"):
+        with visual_b:
+            if st.button("Heatmap", use_container_width=True, key="action_heatmap"):
                 _handle_render_heatmap()
 
-with sim_col:
+with runtime_col:
     with st.container(border=True):
-        st.markdown('<div class="command-section-title">3. Runtime Control</div>', unsafe_allow_html=True)
-        if st.button("Apply to Simulation", use_container_width=True, key="action_apply_sim"):
+        st.markdown('<div class="command-section-title">03 Runtime</div>', unsafe_allow_html=True)
+        if st.button("Apply Simulation", use_container_width=True, key="action_apply_sim"):
             _handle_apply_plan_to_simulation()
         if st.button("Next Step", use_container_width=True, key="action_next_step"):
             _handle_next_simulation_step()
-        st.caption(f"Current step: {sim_state.get('step', 0)}")
+        st.session_state.auto_simulation_enabled = st.checkbox(
+            "Auto-run",
+            value=bool(st.session_state.get("auto_simulation_enabled", False)),
+            help="Advance one simulation step repeatedly.",
+        )
+        st.session_state.auto_simulation_interval = st.slider(
+            "Interval",
+            min_value=0.5,
+            max_value=3.0,
+            value=float(st.session_state.get("auto_simulation_interval", 1.0)),
+            step=0.5,
+        )
 
-with export_col:
+with output_col:
     with st.container(border=True):
-        st.markdown('<div class="command-section-title">4. Output</div>', unsafe_allow_html=True)
+        st.markdown('<div class="command-section-title">04 Output</div>', unsafe_allow_html=True)
         st.link_button("Excel Report", get_excel_export_url(), use_container_width=True)
         st.link_button("PDF Report", get_pdf_export_url(), use_container_width=True)
         reset_a, reset_b = st.columns(2)
@@ -1934,80 +2344,11 @@ with export_col:
             if st.button("Reset", use_container_width=True, key="action_reset_runtime"):
                 _handle_reset_simulation()
         with reset_b:
-            if st.button("Full Reset", use_container_width=True, key="action_full_reset"):
+            if st.button("Full", use_container_width=True, key="action_full_reset"):
                 _handle_full_project_reset()
 
-# -------------------------------------------------------------------
-# Executive metrics
-# -------------------------------------------------------------------
-metric_cols = st.columns(6)
-with metric_cols[0]:
-    st.markdown(f"""
-    <div class="card">
-        <div class="metric-title">CAD Source</div>
-        <div class="metric-value">{latest_cad.get("source_format", "NONE") if latest_cad else "NONE"}</div>
-    </div>
-    """, unsafe_allow_html=True)
-with metric_cols[1]:
-    st.markdown(f"""
-    <div class="card">
-        <div class="metric-title">Rooms</div>
-        <div class="metric-value">{extracted_rooms_count}</div>
-    </div>
-    """, unsafe_allow_html=True)
-with metric_cols[2]:
-    st.markdown(f"""
-    <div class="card">
-        <div class="metric-title">Suggested Nodes</div>
-        <div class="metric-value">{suggested_nodes_count}</div>
-    </div>
-    """, unsafe_allow_html=True)
-with metric_cols[3]:
-    st.markdown(f"""
-    <div class="card">
-        <div class="metric-title">Placement Score</div>
-        <div class="metric-value">{placement}</div>
-    </div>
-    """, unsafe_allow_html=True)
-with metric_cols[4]:
-    st.markdown(f"""
-    <div class="card {'metric-live' if simulation_is_active else ''}">
-        <div class="metric-title">Clients</div>
-        <div class="metric-value">{len(clients)}</div>
-    </div>
-    """, unsafe_allow_html=True)
-with metric_cols[5]:
-    st.markdown(f"""
-    <div class="card {'metric-critical' if critical_alerts_count else ''}">
-        <div class="metric-title">Alerts</div>
-        <div class="metric-value">{len(alerts)}</div>
-        <div class="subtle">{critical_alerts_count} critical</div>
-    </div>
-    """, unsafe_allow_html=True)
-
-st.markdown(f"""
-<div class="status-strip">
-    <div class="status-tile {'critical' if critical_alerts_count else ''}">
-        <b>{critical_alerts_count}</b>
-        <span>Critical alerts</span>
-    </div>
-    <div class="status-tile {'warning' if warning_alerts_count else ''}">
-        <b>{warning_alerts_count}</b>
-        <span>Warnings</span>
-    </div>
-    <div class="status-tile">
-        <b>{info_alerts_count}</b>
-        <span>Info notices</span>
-    </div>
-    <div class="status-tile">
-        <b>{sim_state.get("step", 0)}</b>
-        <span>Simulation step</span>
-    </div>
-</div>
-""", unsafe_allow_html=True)
-
 if simulation_is_active and critical_alerts_count:
-    st.markdown(f"""
+    st.markdown("""
     <div class="critical-banner">
         Critical IDS activity detected. The demo-critical generator creates one critical alert every 5 simulation steps.
     </div>
@@ -2043,7 +2384,7 @@ with workflow_tabs[0]:
         elif latest_rooms and latest_rooms.get("rooms"):
             st.image(get_rendered_url("cad_extract_rooms.png"), use_container_width=True)
         else:
-            st.info("Press Extract Rooms from the sidebar to generate this preview.")
+            st.info("Use Workflow Deck -> Extract Rooms to generate this preview.")
 
     with plan_col:
         st.markdown('<div class="section-title">AI Planning Preview</div>', unsafe_allow_html=True)
