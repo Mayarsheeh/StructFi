@@ -727,7 +727,6 @@ def _send_fcm_message(token: str, alert: Dict[str, Any]) -> bool:
                 "priority": "HIGH",
                 "notification": {
                     "channel_id": "structfi_alerts",
-                    "priority": "HIGH",
                     "default_sound": True,
                 },
             },
