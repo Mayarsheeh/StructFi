@@ -651,6 +651,15 @@ def _mark_critical_push_sent(alert_id: Any) -> None:
     path.write_text(json.dumps(sent[-500:], indent=2), encoding="utf-8")
 
 
+def _clear_critical_push_sent() -> None:
+    path = _critical_push_sent_path()
+    try:
+        if path.exists():
+            path.unlink()
+    except Exception as exc:
+        _push_log(f"Failed to clear critical push sent state: {exc}")
+
+
 def _send_fcm_message(token: str, alert: Dict[str, Any]) -> bool:
     service_account = _firebase_service_account()
     project_id = _firebase_project_id(service_account)
@@ -766,18 +775,18 @@ def _send_fcm_message(token: str, alert: Dict[str, Any]) -> bool:
         return False
 
 
-def _dispatch_critical_alert_push(alert: Dict[str, Any]) -> None:
+def _dispatch_critical_alert_push(alert: Dict[str, Any], force: bool = False) -> Dict[str, Any]:
     if not isinstance(alert, dict):
-        return
+        return {"sent_count": 0, "skipped": True, "reason": "invalid_alert"}
 
     if str(alert.get("severity", "")).lower() != "critical":
-        return
+        return {"sent_count": 0, "skipped": True, "reason": "not_critical"}
 
     alert_id = alert.get("id")
-    if alert_id is None or _critical_push_was_sent(alert_id):
+    if alert_id is None or (_critical_push_was_sent(alert_id) and not force):
         if alert_id is not None:
             _push_log(f"Skipping alert {alert_id}; already sent or invalid")
-        return
+        return {"sent_count": 0, "skipped": True, "reason": "already_sent_or_invalid"}
 
     tokens = _registered_mobile_tokens()
     _push_log(f"Dispatching critical alert {alert_id} to {len(tokens)} registered token entries")
@@ -805,6 +814,12 @@ def _dispatch_critical_alert_push(alert: Dict[str, Any]) -> None:
         _push_log(f"Critical alert {alert_id} sent to {sent_count} device(s)")
     else:
         _push_log(f"Critical alert {alert_id} was not sent to any device")
+
+    return {
+        "sent_count": sent_count,
+        "skipped": False,
+        "reason": "sent" if sent_count > 0 else "not_sent",
+    }
 
 
 def _critical_alert_step_interval() -> int:
@@ -912,7 +927,7 @@ def _build_periodic_critical_alert(step: int, state: Dict[str, Any]) -> Optional
     }
 
 
-def _state_with_periodic_critical_alert(state: Dict[str, Any]) -> Dict[str, Any]:
+def _state_with_periodic_critical_alert(state: Dict[str, Any], dispatch_push: bool = True) -> Dict[str, Any]:
     if not isinstance(state, dict):
         return {}
 
@@ -942,8 +957,9 @@ def _state_with_periodic_critical_alert(state: Dict[str, Any]) -> Dict[str, Any]
         has_alert = any(isinstance(alert, dict) and alert.get("id") == alert_id for alert in alerts)
         if not has_alert:
             alerts.append(periodic_alert)
-            _dispatch_critical_alert_push(periodic_alert)
-        else:
+            if dispatch_push:
+                _dispatch_critical_alert_push(periodic_alert)
+        elif dispatch_push:
             _dispatch_critical_alert_push(periodic_alert)
 
     security_state["alerts"] = alerts
@@ -2021,7 +2037,7 @@ def reset_runtime_on_startup():
 
     if should_reset_runtime:
         try:
-            runtime_reset_service.reset_all_runtime_state()
+            _run_preserving_mobile_device_tokens(runtime_reset_service.reset_all_runtime_state)
         except Exception:
             pass
 
@@ -2160,7 +2176,7 @@ def simulation_reset():
     global simulator
 
     try:
-        runtime_reset_service.reset_all_runtime_state()
+        _run_preserving_mobile_device_tokens(runtime_reset_service.reset_all_runtime_state)
     except Exception:
         pass
 
@@ -2491,9 +2507,9 @@ async def upload_cad(file: UploadFile = File(...)):
 
     try:
         try:
-            runtime_reset_service.reset_derived_state_for_new_upload()
+            _run_preserving_mobile_device_tokens(runtime_reset_service.reset_derived_state_for_new_upload)
         except Exception:
-            runtime_reset_service.reset_all_runtime_state()
+            _run_preserving_mobile_device_tokens(runtime_reset_service.reset_all_runtime_state)
 
         simulator = StructiFiSimulator()
         saved = cad_file_manager.save_cad_file(content, file.filename)
@@ -2859,6 +2875,44 @@ def _mobile_device_tokens_path() -> Path:
     return path
 
 
+def _restore_mobile_device_tokens(tokens_snapshot: List[Dict[str, Any]]) -> None:
+    if not isinstance(tokens_snapshot, list):
+        return
+
+    valid_snapshot = [
+        item
+        for item in tokens_snapshot
+        if isinstance(item, dict) and str(item.get("token", "")).strip()
+    ]
+    if not valid_snapshot:
+        return
+
+    path = _mobile_device_tokens_path()
+    existing_tokens = _read_json(path, default=[])
+    if not isinstance(existing_tokens, list):
+        existing_tokens = []
+
+    merged: Dict[str, Dict[str, Any]] = {}
+    for item in valid_snapshot + existing_tokens:
+        if not isinstance(item, dict):
+            continue
+
+        token_value = str(item.get("token", "")).strip()
+        if token_value:
+            merged[token_value] = item
+
+    path.write_text(json.dumps(list(merged.values())[-200:], indent=2), encoding="utf-8")
+    _push_log(f"Preserved {len(merged)} mobile device token(s) after runtime reset")
+
+
+def _run_preserving_mobile_device_tokens(action):
+    mobile_tokens_snapshot = _registered_mobile_tokens()
+    try:
+        return action()
+    finally:
+        _restore_mobile_device_tokens(mobile_tokens_snapshot)
+
+
 def _save_mobile_device_token(payload: Dict[str, Any]) -> Dict[str, Any]:
     from datetime import datetime
 
@@ -3113,7 +3167,51 @@ def mobile_push_test():
     }
 
 
+@app.get("/mobile/push/dispatch-critical")
+def mobile_push_dispatch_critical(force: bool = False):
+    PUSH_DEBUG_EVENTS.clear()
 
+    if force:
+        _clear_critical_push_sent()
+
+    try:
+        raw_state = simulator.get_state()
+        if isinstance(raw_state, dict):
+            state = _state_with_periodic_critical_alert(raw_state, dispatch_push=False)
+        else:
+            state = _state_with_periodic_critical_alert(_model_to_dict(raw_state) or {}, dispatch_push=False)
+    except Exception:
+        state = _state_dict()
+
+    simulation_active = bool(state.get("node_runtime"))
+    critical_alerts = [
+        alert
+        for alert in _mobile_alerts_from_state(state)
+        if isinstance(alert, dict) and str(alert.get("severity", "")).lower() == "critical"
+    ]
+
+    dispatch_results = []
+    for alert in critical_alerts:
+        result = _dispatch_critical_alert_push(alert, force=force)
+        dispatch_results.append({
+            "id": alert.get("id"),
+            "title": alert.get("title"),
+            "category": alert.get("category"),
+            **result,
+        })
+
+    sent_alerts = _read_json(_critical_push_sent_path(), default=[])
+    return {
+        "message": "Critical push dispatch checked",
+        "simulation_active": simulation_active,
+        "critical_alerts_count": len(critical_alerts),
+        "dispatch_results": dispatch_results[-10:],
+        "sent_alerts_count": len(sent_alerts) if isinstance(sent_alerts, list) else 0,
+        "recent_debug": PUSH_DEBUG_EVENTS[-30:],
+    }
+	
+	
+	
 # -------------------------------------------------------------------
 # Debug helpers
 # -------------------------------------------------------------------
@@ -3135,7 +3233,7 @@ def reset_cad_runtime():
     global simulator
 
     try:
-        runtime_reset_service.reset_all_runtime_state()
+        _run_preserving_mobile_device_tokens(runtime_reset_service.reset_all_runtime_state)
         simulator = StructiFiSimulator()
 
         return {
