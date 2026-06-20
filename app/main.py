@@ -3,6 +3,10 @@ from __future__ import annotations
 import json
 import os
 import time
+import base64
+import urllib.error
+import urllib.parse
+import urllib.request
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -492,6 +496,310 @@ def _current_images() -> Dict[str, Optional[Dict[str, Any]]]:
     }
 
 
+FCM_ACCESS_TOKEN_CACHE: Dict[str, Any] = {}
+
+
+def _push_log(message: str) -> None:
+    print(f"[StructFi Push] {message}", flush=True)
+
+
+def _runtime_json_path(file_name: str) -> Path:
+    path = Path("data/runtime") / file_name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _json_b64url(payload: Dict[str, Any]) -> str:
+    raw = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+    return base64.urlsafe_b64encode(raw).decode("utf-8").rstrip("=")
+
+
+def _firebase_service_account() -> Optional[Dict[str, Any]]:
+    raw = os.getenv("FIREBASE_SERVICE_ACCOUNT_JSON", "").strip()
+
+    if raw:
+        try:
+            return json.loads(raw)
+        except Exception as exc:
+            _push_log(f"FIREBASE_SERVICE_ACCOUNT_JSON parse failed: {exc}")
+            return None
+
+    path_value = os.getenv("FIREBASE_SERVICE_ACCOUNT_FILE", "").strip()
+    if path_value:
+        path = Path(path_value)
+        if path.exists():
+            try:
+                return json.loads(path.read_text(encoding="utf-8"))
+            except Exception as exc:
+                _push_log(f"FIREBASE_SERVICE_ACCOUNT_FILE parse failed: {exc}")
+                return None
+
+    return None
+
+
+def _firebase_project_id(service_account: Optional[Dict[str, Any]] = None) -> Optional[str]:
+    env_project_id = os.getenv("FIREBASE_PROJECT_ID", "").strip()
+    if env_project_id:
+        return env_project_id
+
+    if service_account:
+        project_id = str(service_account.get("project_id", "")).strip()
+        if project_id:
+            return project_id
+
+    return None
+
+
+def _firebase_access_token() -> Optional[str]:
+    cached_token = FCM_ACCESS_TOKEN_CACHE.get("access_token")
+    expires_at = float(FCM_ACCESS_TOKEN_CACHE.get("expires_at", 0) or 0)
+
+    if cached_token and time.time() < expires_at - 60:
+        return str(cached_token)
+
+    service_account = _firebase_service_account()
+    if not service_account:
+        return None
+
+    client_email = service_account.get("client_email")
+    private_key = str(service_account.get("private_key") or "").replace("\\n", "\n")
+
+    if not client_email or not private_key:
+        return None
+
+    try:
+        from cryptography.hazmat.primitives import hashes, serialization
+        from cryptography.hazmat.primitives.asymmetric import padding
+
+        now = int(time.time())
+        header = {"alg": "RS256", "typ": "JWT"}
+        claims = {
+            "iss": client_email,
+            "scope": "https://www.googleapis.com/auth/firebase.messaging",
+            "aud": "https://oauth2.googleapis.com/token",
+            "iat": now,
+            "exp": now + 3600,
+        }
+
+        signing_input = f"{_json_b64url(header)}.{_json_b64url(claims)}".encode("utf-8")
+        key = serialization.load_pem_private_key(private_key.encode("utf-8"), password=None)
+        signature = key.sign(signing_input, padding.PKCS1v15(), hashes.SHA256())
+        jwt_assertion = (
+            signing_input.decode("utf-8")
+            + "."
+            + base64.urlsafe_b64encode(signature).decode("utf-8").rstrip("=")
+        )
+
+        body = urllib.parse.urlencode({
+            "grant_type": "urn:ietf:params:oauth:grant-type:jwt-bearer",
+            "assertion": jwt_assertion,
+        }).encode("utf-8")
+        request = urllib.request.Request(
+            "https://oauth2.googleapis.com/token",
+            data=body,
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+            method="POST",
+        )
+
+        with urllib.request.urlopen(request, timeout=20) as response:
+            token_payload = json.loads(response.read().decode("utf-8"))
+
+        access_token = token_payload.get("access_token")
+        expires_in = int(token_payload.get("expires_in", 3600) or 3600)
+
+        if not access_token:
+            return None
+
+        FCM_ACCESS_TOKEN_CACHE["access_token"] = access_token
+        FCM_ACCESS_TOKEN_CACHE["expires_at"] = time.time() + expires_in
+        return str(access_token)
+    except Exception as exc:
+        _push_log(f"Firebase access token failed: {exc}")
+        return None
+
+
+def _registered_mobile_tokens() -> List[Dict[str, Any]]:
+    tokens = _read_json(_mobile_device_tokens_path(), default=[])
+    return tokens if isinstance(tokens, list) else []
+
+
+def _critical_push_sent_path() -> Path:
+    return _runtime_json_path("critical_push_sent_alerts.json")
+
+
+def _critical_push_was_sent(alert_id: Any) -> bool:
+    sent = _read_json(_critical_push_sent_path(), default=[])
+    return str(alert_id) in {str(item) for item in sent if item is not None}
+
+
+def _mark_critical_push_sent(alert_id: Any) -> None:
+    path = _critical_push_sent_path()
+    sent = _read_json(path, default=[])
+
+    if not isinstance(sent, list):
+        sent = []
+
+    alert_id_text = str(alert_id)
+    if alert_id_text not in {str(item) for item in sent if item is not None}:
+        sent.append(alert_id_text)
+
+    path.write_text(json.dumps(sent[-500:], indent=2), encoding="utf-8")
+
+
+def _send_fcm_message(token: str, alert: Dict[str, Any]) -> bool:
+    service_account = _firebase_service_account()
+    project_id = _firebase_project_id(service_account)
+    access_token = _firebase_access_token()
+
+    title = f"Critical IDS Alert: {alert.get('title', 'Network event')}"
+    body = str(alert.get("description", "A critical StructFi alert requires attention."))
+
+    if not project_id or not access_token:
+        legacy_key = os.getenv("FCM_SERVER_KEY", "").strip()
+        if not legacy_key:
+            return False
+
+        legacy_payload = {
+            "to": token,
+            "priority": "high",
+            "notification": {
+                "title": title,
+                "body": body[:220],
+                "sound": "default",
+                "channel_id": "structfi_alerts",
+            },
+            "data": {
+                "type": "critical_alert",
+                "alert_id": str(alert.get("id", "")),
+                "severity": str(alert.get("severity", "critical")),
+                "category": str(alert.get("category", "")),
+                "node_id": str(alert.get("node_id", "")),
+            },
+        }
+
+        request = urllib.request.Request(
+            "https://fcm.googleapis.com/fcm/send",
+            data=json.dumps(legacy_payload).encode("utf-8"),
+            headers={
+                "Authorization": f"key={legacy_key}",
+                "Content-Type": "application/json",
+            },
+            method="POST",
+        )
+
+        try:
+            with urllib.request.urlopen(request, timeout=20) as response:
+                return 200 <= int(response.status) < 300
+        except urllib.error.HTTPError as exc:
+            try:
+                detail = exc.read().decode("utf-8")
+            except Exception:
+                detail = str(exc)
+            _push_log(f"Legacy FCM send failed: {exc.code} {detail}")
+            return False
+        except Exception as exc:
+            _push_log(f"Legacy FCM send failed: {exc}")
+            return False
+
+    payload = {
+        "message": {
+            "token": token,
+            "notification": {
+                "title": title,
+                "body": body[:220],
+            },
+            "data": {
+                "type": "critical_alert",
+                "alert_id": str(alert.get("id", "")),
+                "severity": str(alert.get("severity", "critical")),
+                "category": str(alert.get("category", "")),
+                "node_id": str(alert.get("node_id", "")),
+            },
+            "android": {
+                "priority": "HIGH",
+                "notification": {
+                    "channel_id": "structfi_alerts",
+                    "priority": "HIGH",
+                    "default_sound": True,
+                },
+            },
+            "apns": {
+                "payload": {
+                    "aps": {
+                        "sound": "default",
+                        "badge": 1,
+                    },
+                },
+            },
+        }
+    }
+
+    request = urllib.request.Request(
+        f"https://fcm.googleapis.com/v1/projects/{project_id}/messages:send",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "Authorization": f"Bearer {access_token}",
+            "Content-Type": "application/json; charset=UTF-8",
+        },
+        method="POST",
+    )
+
+    try:
+        with urllib.request.urlopen(request, timeout=20) as response:
+            return 200 <= int(response.status) < 300
+    except urllib.error.HTTPError as exc:
+        try:
+            detail = exc.read().decode("utf-8")
+        except Exception:
+            detail = str(exc)
+        _push_log(f"FCM v1 send failed: {exc.code} {detail}")
+        return False
+    except Exception as exc:
+        _push_log(f"FCM v1 send failed: {exc}")
+        return False
+
+
+def _dispatch_critical_alert_push(alert: Dict[str, Any]) -> None:
+    if not isinstance(alert, dict):
+        return
+
+    if str(alert.get("severity", "")).lower() != "critical":
+        return
+
+    alert_id = alert.get("id")
+    if alert_id is None or _critical_push_was_sent(alert_id):
+        if alert_id is not None:
+            _push_log(f"Skipping alert {alert_id}; already sent or invalid")
+        return
+
+    tokens = _registered_mobile_tokens()
+    _push_log(f"Dispatching critical alert {alert_id} to {len(tokens)} registered token entries")
+    sent_count = 0
+
+    for token_entry in tokens:
+        if not isinstance(token_entry, dict):
+            continue
+
+        token = str(token_entry.get("token", "")).strip()
+        if not token:
+            continue
+
+        if token_entry.get("notifications_enabled") is False:
+            continue
+
+        if token_entry.get("critical_alerts_enabled") is False:
+            continue
+
+        if _send_fcm_message(token, alert):
+            sent_count += 1
+
+    if sent_count > 0:
+        _mark_critical_push_sent(alert_id)
+        _push_log(f"Critical alert {alert_id} sent to {sent_count} device(s)")
+    else:
+        _push_log(f"Critical alert {alert_id} was not sent to any device")
+
+
 def _critical_alert_step_interval() -> int:
     raw_interval = os.getenv("CRITICAL_ALERT_STEP_INTERVAL", "5")
 
@@ -627,6 +935,9 @@ def _state_with_periodic_critical_alert(state: Dict[str, Any]) -> Dict[str, Any]
         has_alert = any(isinstance(alert, dict) and alert.get("id") == alert_id for alert in alerts)
         if not has_alert:
             alerts.append(periodic_alert)
+            _dispatch_critical_alert_push(periodic_alert)
+        else:
+            _dispatch_critical_alert_push(periodic_alert)
 
     security_state["alerts"] = alerts
     state["security_state"] = security_state
@@ -2720,6 +3031,75 @@ def mobile_device_token(payload: MobileDeviceTokenRequest):
         raise HTTPException(status_code=400, detail="Device token is required")
 
     return _save_mobile_device_token(data)
+
+
+@app.get("/mobile/push/status")
+def mobile_push_status():
+    service_account = _firebase_service_account()
+    project_id = _firebase_project_id(service_account)
+    tokens = _registered_mobile_tokens()
+    sent_alerts = _read_json(_critical_push_sent_path(), default=[])
+
+    return {
+        "tokens_count": len(tokens),
+        "has_tokens": len(tokens) > 0,
+        "firebase_project_id": project_id,
+        "service_account_configured": service_account is not None,
+        "service_account_project_id": service_account.get("project_id") if service_account else None,
+        "service_account_client_email": service_account.get("client_email") if service_account else None,
+        "fcm_server_key_configured": bool(os.getenv("FCM_SERVER_KEY", "").strip()),
+        "cryptography_available": _cryptography_available(),
+        "sent_alerts_count": len(sent_alerts) if isinstance(sent_alerts, list) else 0,
+        "token_preview": [
+            {
+                "platform": item.get("platform"),
+                "notifications_enabled": item.get("notifications_enabled"),
+                "critical_alerts_enabled": item.get("critical_alerts_enabled"),
+                "registered_at": item.get("registered_at"),
+                "token_suffix": str(item.get("token", ""))[-12:],
+            }
+            for item in tokens
+            if isinstance(item, dict)
+        ][-5:],
+    }
+
+
+def _cryptography_available() -> bool:
+    try:
+        from cryptography.hazmat.primitives import hashes  # noqa: F401
+        return True
+    except Exception:
+        return False
+
+
+@app.get("/mobile/push/test")
+def mobile_push_test():
+    test_alert = {
+        "id": f"manual-test-{int(time.time())}",
+        "severity": "critical",
+        "title": "StructFi push test",
+        "description": "Backend-to-device notification path is working.",
+        "node_id": None,
+        "category": "push_test",
+    }
+
+    tokens = _registered_mobile_tokens()
+    sent_count = 0
+
+    for token_entry in tokens:
+        if not isinstance(token_entry, dict):
+            continue
+
+        token = str(token_entry.get("token", "")).strip()
+        if token and _send_fcm_message(token, test_alert):
+            sent_count += 1
+
+    return {
+        "message": "Push test completed",
+        "tokens_count": len(tokens),
+        "sent_count": sent_count,
+        "success": sent_count > 0,
+    }
 
 
 
