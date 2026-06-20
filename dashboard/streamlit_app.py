@@ -37,7 +37,7 @@ def resolve_api_url() -> str:
 API_URL = resolve_api_url()
 
 st.set_page_config(
-    page_title="StructiFi CAD Command Center",
+    page_title="StructiFi",
     page_icon="S",
     layout="wide",
     initial_sidebar_state="collapsed"
@@ -2308,7 +2308,7 @@ st.markdown(f"""
     <div class="sf-brand">
         <div class="sf-mark">S</div>
         <div>
-            <div class="sf-brand-title">StructFi Command Center</div>
+            <div class="sf-brand-title">StructFi Digital Twin</div>
             <div class="sf-brand-sub">CAD + AI planning + live network simulation</div>
         </div>
     </div>
@@ -2322,7 +2322,7 @@ st.markdown(f"""
 <div class="sf-hero-pro">
     <div>
         <div class="sf-eyebrow">Live Network Lab</div>
-        <h1>StructFi Mission Control</h1>
+        <h1>StructFi Control Center</h1>
         <p>CAD planning, RF views, live simulation, IDS, and reports in one control surface.</p>
     </div>
 </div>
