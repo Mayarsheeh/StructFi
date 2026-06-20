@@ -509,31 +509,91 @@ def _build_periodic_critical_alert(step: int, state: Dict[str, Any]) -> Optional
 
     runtime_nodes = state.get("node_runtime", []) or []
     clients = state.get("clients", []) or []
-    target_node = runtime_nodes[0] if runtime_nodes and isinstance(runtime_nodes[0], dict) else {}
+    node_candidates = [node for node in runtime_nodes if isinstance(node, dict)]
+    if not node_candidates:
+        return None
+
+    target_node = node_candidates[(step // _critical_alert_step_interval() - 1) % len(node_candidates)]
+    radio = target_node.get("radio", {}) or {}
+    environment = target_node.get("environment", {}) or {}
+    node_load = target_node.get("current_load", target_node.get("connected_clients", 0))
 
     node_id = target_node.get("id") or target_node.get("node_id")
-    node_name = target_node.get("name", "primary runtime node")
+    node_name = target_node.get("name") or target_node.get("room_name") or "runtime node"
+    room_name = target_node.get("room_name", "active coverage zone")
+
+    alert_index = (step // _critical_alert_step_interval() - 1) % 5
+    alert_templates = [
+        {
+            "title": "Rogue access point signature detected",
+            "description": (
+                f"IDS detected an unauthorized BSSID pattern near {room_name}. "
+                f"{node_name} is reporting abnormal beacon activity on the active RF channel."
+            ),
+            "category": "wireless_intrusion",
+            "recommendation": "Isolate the affected RF zone, verify nearby access points, and rotate the WLAN security key if the signature persists.",
+        },
+        {
+            "title": "Authentication failure burst",
+            "description": (
+                f"Multiple rejected association attempts were observed around {room_name}. "
+                "The pattern matches a credential-stuffing or misconfigured-device burst."
+            ),
+            "category": "authentication_anomaly",
+            "recommendation": "Review RADIUS logs, block the source client fingerprint, and confirm the SSID access policy.",
+        },
+        {
+            "title": "Critical node saturation",
+            "description": (
+                f"{node_name} is operating above the safe client/load threshold. "
+                f"Current load is {node_load}, with degraded roaming headroom."
+            ),
+            "category": "node_capacity",
+            "recommendation": "Move high-priority clients to a nearby node or add capacity for this room before continuing the scenario.",
+        },
+        {
+            "title": "Severe RF quality degradation",
+            "description": (
+                f"Packet loss and retry indicators exceeded the critical RF threshold near {room_name}. "
+                "Client sessions may experience unstable throughput."
+            ),
+            "category": "rf_quality",
+            "recommendation": "Adjust channel assignment, reduce co-channel interference, and validate the heatmap for this zone.",
+        },
+        {
+            "title": "Thermal risk on access node",
+            "description": (
+                f"{node_name} reported an enclosure heat-risk pattern while serving active clients. "
+                "Sustained operation may reduce radio stability."
+            ),
+            "category": "hardware_health",
+            "recommendation": "Inspect node placement, improve ventilation, and monitor temperature before adding more clients.",
+        },
+    ]
+    selected_alert = alert_templates[alert_index]
 
     return {
         "id": 900000 + step,
         "severity": "critical",
-        "title": f"Critical IDS event at simulation step {step}",
-        "description": (
-            f"Periodic demo-critical alert generated at step {step} to validate "
-            "dashboard, mobile, and IDS escalation visibility."
-        ),
+        "title": selected_alert["title"],
+        "description": selected_alert["description"],
         "node_id": node_id,
         "client_id": None,
-        "policy_id": "periodic-critical-demo",
-        "category": "ids_periodic_critical",
+        "policy_id": "ids-critical-escalation",
+        "category": selected_alert["category"],
         "evidence": {
-            "step": step,
-            "interval": _critical_alert_step_interval(),
+            "simulation_step": step,
             "node_name": node_name,
+            "room_name": room_name,
+            "current_load": node_load,
+            "retry_rate_pct": radio.get("retry_rate_pct"),
+            "packet_loss_pct": radio.get("packet_loss_pct"),
+            "latency_ms": radio.get("latency_ms"),
+            "temperature_c": environment.get("temperature_c"),
             "runtime_nodes": len(runtime_nodes) if isinstance(runtime_nodes, list) else 0,
             "clients": len(clients) if isinstance(clients, list) else 0,
         },
-        "recommendation": "Investigate the affected node, review client sessions, and confirm IDS escalation handling.",
+        "recommendation": selected_alert["recommendation"],
     }
 
 
@@ -683,8 +743,6 @@ def _node_id_value(node: Any) -> Optional[int]:
 
 
 def _find_runtime_node(node_id: int) -> Any:
-    _auto_apply_latest_plan_if_state_empty()
-
     for node in _runtime_nodes_from_simulator_memory():
         if _node_id_value(node) == int(node_id):
             return node
@@ -1651,12 +1709,19 @@ def reset_runtime_on_startup():
 
     simulator = StructiFiSimulator()
 
-    # If a latest CAD plan exists on disk, apply it into memory so mobile endpoints
-    # recover after a Render restart without requiring Streamlit to be opened first.
-    try:
-        _auto_apply_latest_plan_if_state_empty()
-    except Exception:
-        pass
+    # Runtime must start only when the user explicitly applies the CAD plan.
+    # This keeps clients and alerts at zero after AI planning until simulation begins.
+    should_auto_apply = os.getenv("STRUCTFI_AUTO_APPLY_PLAN_ON_STARTUP", "false").lower() in {
+        "1",
+        "true",
+        "yes",
+    }
+
+    if should_auto_apply:
+        try:
+            _auto_apply_latest_plan_if_state_empty()
+        except Exception:
+            pass
 
 
 # -------------------------------------------------------------------
@@ -1727,13 +1792,11 @@ def planner_nodes():
 
 @app.get("/simulation/state")
 def simulation_state():
-    _auto_apply_latest_plan_if_state_empty()
-    return simulator.get_state()
+    return _state_dict()
 
 
 @app.get("/simulation/summary")
 def simulation_summary():
-    _auto_apply_latest_plan_if_state_empty()
     state = _state_dict()
     return {
         "simulation_source": state.get("simulation_source", "unknown"),
@@ -1750,14 +1813,24 @@ def simulation_summary():
 
 @app.post("/simulation/step")
 def simulation_step():
-    _auto_apply_latest_plan_if_state_empty()
+    state = _state_dict()
+    if not state.get("node_runtime"):
+        raise HTTPException(
+            status_code=409,
+            detail="Simulation is not active. Apply the CAD plan to simulation first.",
+        )
     simulator.step()
     return _state_dict()
 
 
 @app.post("/simulation/run-steps/{steps}")
 def simulation_run_steps(steps: int):
-    _auto_apply_latest_plan_if_state_empty()
+    state = _state_dict()
+    if not state.get("node_runtime"):
+        raise HTTPException(
+            status_code=409,
+            detail="Simulation is not active. Apply the CAD plan to simulation first.",
+        )
     steps = max(1, min(int(steps), 100))
     for _ in range(steps):
         simulator.step()
@@ -1811,13 +1884,11 @@ def force_apply_latest_plan_to_simulation_from_browser():
 
 @app.get("/simulation/nodes")
 def simulation_nodes():
-    _auto_apply_latest_plan_if_state_empty()
     return {"nodes": _state_dict().get("node_runtime", [])}
 
 
 @app.get("/simulation/clients")
 def simulation_clients():
-    _auto_apply_latest_plan_if_state_empty()
     return {"clients": _state_dict().get("clients", [])}
 
 
@@ -2496,8 +2567,6 @@ def _save_mobile_device_token(payload: Dict[str, Any]) -> Dict[str, Any]:
 
 @app.get("/mobile/bootstrap")
 def mobile_bootstrap():
-    _auto_apply_latest_plan_if_state_empty()
-
     state = _state_dict()
     plan = _get_latest_plan_model_or_dict()
     building = _latest_building_dict()
@@ -2530,8 +2599,6 @@ def mobile_bootstrap():
 
 @app.get("/mobile/dashboard")
 def mobile_dashboard():
-    _auto_apply_latest_plan_if_state_empty()
-
     state = _state_dict()
     plan = _get_latest_plan_model_or_dict()
     building = _latest_building_dict()
@@ -2569,8 +2636,6 @@ def mobile_dashboard():
 
 @app.get("/mobile/simulation")
 def mobile_simulation():
-    _auto_apply_latest_plan_if_state_empty()
-
     state = _state_dict()
     runtime_nodes = state.get("node_runtime", []) or []
     clients = state.get("clients", []) or []
@@ -2603,8 +2668,6 @@ def mobile_images():
 
 @app.get("/mobile/nodes")
 def mobile_nodes():
-    _auto_apply_latest_plan_if_state_empty()
-
     state = _state_dict()
     plan = _get_latest_plan_model_or_dict()
     runtime_nodes = state.get("node_runtime", []) or []
@@ -2633,8 +2696,6 @@ def mobile_clients():
 
 @app.get("/mobile/alerts")
 def mobile_alerts():
-    _auto_apply_latest_plan_if_state_empty()
-
     state = _state_dict()
     alerts = _mobile_alerts_from_state(state)
     simulation_active = bool(state.get("node_runtime"))

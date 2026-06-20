@@ -1779,9 +1779,8 @@ if not building_data and latest_rooms:
 
 plan_nodes_list = _dashboard_plan_nodes(latest_plan)
 node_runtime_raw = sim_state.get("node_runtime", []) or []
-if node_runtime_raw:
-    st.session_state.simulation_runtime_active = True
-simulation_is_active = bool(st.session_state.get("simulation_runtime_active", False) or node_runtime_raw)
+simulation_is_active = bool(node_runtime_raw)
+st.session_state.simulation_runtime_active = simulation_is_active
 security_state = sim_state.get("security_state", {}) or {}
 
 if simulation_is_active:
@@ -2123,59 +2122,6 @@ st.markdown("""
         font-weight: 800;
     }
 
-    .sf-progress-rail {
-        display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
-        gap: 10px;
-        margin: 4px 0 18px;
-    }
-
-    .sf-stage {
-        position: relative;
-        overflow: hidden;
-        min-height: 70px;
-        padding: 13px 14px;
-        border-radius: 20px;
-        background: rgba(255,255,255,0.70);
-        border: 1px solid rgba(15,23,42,0.08);
-        box-shadow: 0 10px 28px rgba(15,23,42,0.06);
-    }
-
-    .sf-stage::after {
-        content: "";
-        position: absolute;
-        left: 0;
-        right: 0;
-        bottom: 0;
-        height: 3px;
-        background: rgba(148,163,184,0.35);
-    }
-
-    .sf-stage.done::after {
-        background: linear-gradient(90deg, #16a34a, #22c55e);
-    }
-
-    .sf-stage.active::after {
-        background: linear-gradient(90deg, #0a84ff, #60a5fa);
-    }
-
-    .sf-stage b {
-        display: block;
-        color: #0f172a;
-        font-size: 0.82rem;
-        font-weight: 950;
-    }
-
-    .sf-stage span {
-        display: block;
-        margin-top: 8px;
-        color: #64748b;
-        font-size: 0.78rem;
-        font-weight: 900;
-        text-transform: uppercase;
-        letter-spacing: 0.24px;
-    }
-
     .sf-section-head {
         display: flex;
         justify-content: space-between;
@@ -2280,6 +2226,75 @@ st.markdown("""
             letter-spacing: -1.6px;
         }
     }
+
+    .sf-hero-pro {
+        display: block;
+        padding: 18px 20px;
+        border-radius: 24px;
+        margin-bottom: 12px;
+    }
+
+    .sf-hero-pro h1 {
+        margin: 10px 0 6px;
+        font-size: clamp(2rem, 3.4vw, 3.4rem);
+        letter-spacing: -2px;
+    }
+
+    .sf-hero-pro p {
+        max-width: 760px;
+        margin-bottom: 0;
+    }
+
+    .sf-mini-map {
+        display: none !important;
+    }
+
+    .sf-kpi-grid {
+        grid-template-columns: repeat(auto-fit, minmax(145px, 1fr));
+        gap: 10px;
+        margin: 10px 0 12px;
+    }
+
+    .sf-kpi {
+        min-height: 88px;
+        padding: 14px 15px;
+        border-radius: 18px;
+    }
+
+    .sf-kpi b {
+        margin-top: 8px;
+        font-size: clamp(1.55rem, 2.5vw, 2.25rem);
+    }
+
+    .sf-kpi small {
+        display: none;
+    }
+
+    .sf-control-title {
+        margin: 12px 0 8px;
+        color: #0f172a;
+        font-size: 1rem;
+        font-weight: 950;
+        letter-spacing: -0.35px;
+    }
+
+    .sf-control-hint {
+        margin-top: -4px;
+        margin-bottom: 8px;
+        color: #64748b;
+        font-size: 0.8rem;
+        font-weight: 800;
+    }
+
+    div[data-testid="stVerticalBlockBorderWrapper"] {
+        border-radius: 20px !important;
+        box-shadow: 0 14px 34px rgba(15,23,42,0.07) !important;
+    }
+
+    .stButton > button,
+    .stLinkButton > a {
+        min-height: 46px !important;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -2288,17 +2303,6 @@ simulation_label = "Live" if simulation_is_active else "Standby"
 simulation_dot_class = "" if simulation_is_active else "warn"
 alert_kpi_class = "danger" if critical_alerts_count else ""
 client_kpi_class = "live" if simulation_is_active else ""
-stage_source_done = latest_cad is not None
-stage_rooms_done = extracted_rooms_count > 0
-stage_plan_done = suggested_nodes_count > 0
-stage_runtime_done = simulation_is_active
-stage_alerts_done = len(alerts) > 0
-stage_source_class = "done" if stage_source_done else "active"
-stage_rooms_class = "done" if stage_rooms_done else ("active" if stage_source_done else "")
-stage_plan_class = "done" if stage_plan_done else ("active" if stage_rooms_done else "")
-stage_runtime_class = "done" if stage_runtime_done else ("active" if stage_plan_done else "")
-stage_alerts_class = "done" if stage_alerts_done else ("active" if stage_runtime_done else "")
-
 st.markdown(f"""
 <div class="sf-topbar">
     <div class="sf-brand">
@@ -2318,14 +2322,8 @@ st.markdown(f"""
 <div class="sf-hero-pro">
     <div>
         <div class="sf-eyebrow">Live Network Lab</div>
-        <h1>Mission Control.</h1>
-        <p>CAD to AI planning, RF views, live simulation, IDS, and reports.</p>
-    </div>
-    <div class="sf-mini-map">
-        <div class="sf-map-stat">Live clients<b>{len(clients)}</b></div>
-        <div class="sf-node a">AP</div>
-        <div class="sf-node b">IDS</div>
-        <div class="sf-map-chip">{critical_alerts_count} critical / {warning_alerts_count} warning</div>
+        <h1>StructFi Mission Control</h1>
+        <p>CAD planning, RF views, live simulation, IDS, and reports in one control surface.</p>
     </div>
 </div>
 
@@ -2338,26 +2336,14 @@ st.markdown(f"""
     <div class="sf-kpi {alert_kpi_class}"><span>Alerts</span><b>{len(alerts)}</b><small>{critical_alerts_count} critical</small></div>
 </div>
 
-<div class="sf-progress-rail">
-    <div class="sf-stage {stage_source_class}"><b>01</b><span>Source</span></div>
-    <div class="sf-stage {stage_rooms_class}"><b>02</b><span>Rooms</span></div>
-    <div class="sf-stage {stage_plan_class}"><b>03</b><span>Plan</span></div>
-    <div class="sf-stage {stage_runtime_class}"><b>04</b><span>Runtime</span></div>
-    <div class="sf-stage {stage_alerts_class}"><b>05</b><span>Monitor</span></div>
-</div>
-
-<div class="sf-section-head">
-    <div>
-        <h2>Workflow</h2>
-        <p>Run left to right.</p>
-    </div>
-</div>
+<div class="sf-control-title">Controls</div>
+<div class="sf-control-hint">Upload once, then run the actions from left to right.</div>
 """, unsafe_allow_html=True)
 
-upload_col, cad_col, runtime_col, output_col = st.columns([1, 1, 1, 1])
+with st.container(border=True):
+    source_col, actions_col, runtime_col = st.columns([1.15, 2.45, 1.55])
 
-with upload_col:
-    with st.container(border=True):
+    with source_col:
         st.markdown('<div class="command-section-title">Source</div>', unsafe_allow_html=True)
         uploaded_cad = st.file_uploader(
             "DXF / DWG",
@@ -2367,28 +2353,36 @@ with upload_col:
         if st.button("Upload", use_container_width=True, key="action_upload_cad"):
             _handle_upload_cad(uploaded_cad)
 
-with cad_col:
-    with st.container(border=True):
-        st.markdown('<div class="command-section-title">Build</div>', unsafe_allow_html=True)
-        if st.button("Extract", use_container_width=True, key="action_extract_rooms"):
-            _handle_extract_rooms()
-        if st.button("AI Plan", use_container_width=True, key="action_ai_plan"):
-            _handle_ai_planning()
-        visual_a, visual_b = st.columns(2)
-        with visual_a:
+    with actions_col:
+        st.markdown('<div class="command-section-title">Build & Visualize</div>', unsafe_allow_html=True)
+        action_cols = st.columns(4)
+        with action_cols[0]:
+            if st.button("Extract", use_container_width=True, key="action_extract_rooms"):
+                _handle_extract_rooms()
+        with action_cols[1]:
+            if st.button("AI Plan", use_container_width=True, key="action_ai_plan"):
+                _handle_ai_planning()
+        with action_cols[2]:
             if st.button("Preview", use_container_width=True, key="action_render_plan"):
                 _handle_render_plan()
-        with visual_b:
+        with action_cols[3]:
             if st.button("Heatmap", use_container_width=True, key="action_heatmap"):
                 _handle_render_heatmap()
 
-with runtime_col:
-    with st.container(border=True):
+        export_cols = st.columns(4)
+        with export_cols[0]:
+            if st.button("Apply", use_container_width=True, key="action_apply_sim"):
+                _handle_apply_plan_to_simulation()
+        with export_cols[1]:
+            if st.button("Step", use_container_width=True, key="action_next_step"):
+                _handle_next_simulation_step()
+        with export_cols[2]:
+            st.link_button("Excel", get_excel_export_url(), use_container_width=True)
+        with export_cols[3]:
+            st.link_button("PDF", get_pdf_export_url(), use_container_width=True)
+
+    with runtime_col:
         st.markdown('<div class="command-section-title">Runtime</div>', unsafe_allow_html=True)
-        if st.button("Apply", use_container_width=True, key="action_apply_sim"):
-            _handle_apply_plan_to_simulation()
-        if st.button("Step", use_container_width=True, key="action_next_step"):
-            _handle_next_simulation_step()
         st.session_state.auto_simulation_enabled = st.checkbox(
             "Auto",
             value=bool(st.session_state.get("auto_simulation_enabled", False)),
@@ -2401,12 +2395,6 @@ with runtime_col:
             value=float(st.session_state.get("auto_simulation_interval", 1.0)),
             step=0.5,
         )
-
-with output_col:
-    with st.container(border=True):
-        st.markdown('<div class="command-section-title">Output</div>', unsafe_allow_html=True)
-        st.link_button("Excel", get_excel_export_url(), use_container_width=True)
-        st.link_button("PDF", get_pdf_export_url(), use_container_width=True)
         reset_a, reset_b = st.columns(2)
         with reset_a:
             if st.button("Reset", use_container_width=True, key="action_reset_runtime"):
@@ -2418,7 +2406,7 @@ with output_col:
 if simulation_is_active and critical_alerts_count:
     st.markdown("""
     <div class="critical-banner">
-        Critical IDS activity detected. The demo-critical generator creates one critical alert every 5 simulation steps.
+        Critical IDS activity detected. Review the alert feed before continuing the runtime scenario.
     </div>
     """, unsafe_allow_html=True)
 
