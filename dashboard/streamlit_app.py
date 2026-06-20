@@ -38,7 +38,7 @@ API_URL = resolve_api_url()
 
 st.set_page_config(
     page_title="StructiFi CAD Command Center",
-    page_icon="📡",
+    page_icon="S",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -445,6 +445,381 @@ st.markdown("""
     @media (max-width: 640px) {
         .status-strip {
             grid-template-columns: 1fr;
+        }
+    }
+</style>
+""", unsafe_allow_html=True)
+
+st.markdown("""
+<style>
+    :root {
+        --sf-page: #f7f9fc;
+        --sf-panel: rgba(255,255,255,0.88);
+        --sf-ink: #0f172a;
+        --sf-soft: #64748b;
+        --sf-line: rgba(15,23,42,0.08);
+        --sf-brand: #0a84ff;
+        --sf-brand-2: #2563eb;
+        --sf-ok: #16a34a;
+        --sf-warn: #f59e0b;
+        --sf-danger: #dc2626;
+        --sf-shadow-lg: 0 28px 80px rgba(15,23,42,0.12);
+        --sf-shadow-md: 0 16px 42px rgba(15,23,42,0.09);
+    }
+
+    @keyframes sfFadeUp {
+        from { opacity: 0; transform: translateY(14px); }
+        to { opacity: 1; transform: translateY(0); }
+    }
+
+    @keyframes sfGlow {
+        0%, 100% { box-shadow: 0 0 0 0 rgba(10,132,255,0.18); }
+        50% { box-shadow: 0 0 0 10px rgba(10,132,255,0); }
+    }
+
+    @keyframes sfScan {
+        0% { transform: translateX(-120%); opacity: 0; }
+        20% { opacity: 1; }
+        100% { transform: translateX(120%); opacity: 0; }
+    }
+
+    .stApp {
+        background:
+            linear-gradient(115deg, rgba(10,132,255,0.08), transparent 28%),
+            linear-gradient(250deg, rgba(22,163,74,0.06), transparent 26%),
+            linear-gradient(180deg, #fbfdff 0%, #f7f9fc 48%, #eef3f9 100%);
+    }
+
+    header[data-testid="stHeader"] {
+        background: rgba(255,255,255,0.58);
+        backdrop-filter: blur(18px);
+        border-bottom: 1px solid rgba(15,23,42,0.06);
+    }
+
+    .block-container {
+        max-width: 1500px;
+        padding-top: 1.35rem;
+        padding-left: 2rem;
+        padding-right: 2rem;
+    }
+
+    .hero {
+        display: grid;
+        grid-template-columns: minmax(0, 1.18fr) minmax(300px, 0.82fr);
+        gap: 28px;
+        align-items: stretch;
+        padding: 28px;
+        margin-bottom: 16px;
+        border-radius: 28px;
+        background:
+            linear-gradient(135deg, rgba(255,255,255,0.96), rgba(244,248,255,0.88)),
+            radial-gradient(circle at 88% 18%, rgba(10,132,255,0.18), transparent 35%);
+        border: 1px solid rgba(255,255,255,0.92);
+        box-shadow: var(--sf-shadow-lg);
+        animation: sfFadeUp .55s ease both;
+    }
+
+    .hero::after {
+        display: none;
+    }
+
+    .hero-kicker {
+        display: inline-flex;
+        width: fit-content;
+        align-items: center;
+        gap: 8px;
+        padding: 7px 11px;
+        border-radius: 999px;
+        color: #0f3f8c;
+        background: rgba(10,132,255,0.10);
+        border: 1px solid rgba(10,132,255,0.14);
+        font-size: 0.78rem;
+        font-weight: 900;
+        letter-spacing: 0.2px;
+        text-transform: uppercase;
+    }
+
+    .live-dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 999px;
+        background: var(--sf-ok);
+        animation: sfGlow 2.4s ease infinite;
+    }
+
+    .hero h1 {
+        margin-top: 18px;
+        max-width: 900px;
+        font-size: clamp(2.35rem, 4vw, 4.8rem);
+        letter-spacing: -2.4px;
+        color: var(--sf-ink);
+    }
+
+    .hero p {
+        max-width: 760px;
+        color: var(--sf-soft);
+        font-size: 1.02rem;
+        line-height: 1.6;
+    }
+
+    .hero .workflow-pill {
+        background: rgba(255,255,255,0.78);
+        border: 1px solid rgba(15,23,42,0.08);
+        box-shadow: 0 10px 24px rgba(15,23,42,0.07);
+    }
+
+    .hero-visual {
+        position: relative;
+        min-height: 250px;
+        overflow: hidden;
+        border-radius: 24px;
+        border: 1px solid rgba(15,23,42,0.08);
+        background:
+            linear-gradient(135deg, rgba(15,23,42,0.94), rgba(30,64,175,0.86)),
+            radial-gradient(circle at 80% 0%, rgba(96,165,250,0.38), transparent 38%);
+        color: white;
+        padding: 22px;
+    }
+
+    .hero-visual::before {
+        content: "";
+        position: absolute;
+        inset: 18px;
+        border-radius: 18px;
+        border: 1px solid rgba(255,255,255,0.12);
+        background:
+            linear-gradient(rgba(255,255,255,0.06) 1px, transparent 1px),
+            linear-gradient(90deg, rgba(255,255,255,0.06) 1px, transparent 1px);
+        background-size: 34px 34px;
+        opacity: 0.8;
+    }
+
+    .hero-visual::after {
+        content: "";
+        position: absolute;
+        top: 36px;
+        bottom: 36px;
+        width: 120px;
+        background: linear-gradient(90deg, transparent, rgba(255,255,255,0.17), transparent);
+        animation: sfScan 4.4s ease-in-out infinite;
+    }
+
+    .visual-node {
+        position: absolute;
+        width: 74px;
+        height: 74px;
+        border-radius: 22px;
+        background: rgba(255,255,255,0.13);
+        border: 1px solid rgba(255,255,255,0.18);
+        backdrop-filter: blur(12px);
+        display: grid;
+        place-items: center;
+        font-weight: 950;
+        z-index: 2;
+    }
+
+    .visual-node.main {
+        right: 38px;
+        top: 38px;
+        background: rgba(10,132,255,0.40);
+    }
+
+    .visual-node.secondary {
+        left: 38px;
+        bottom: 42px;
+    }
+
+    .visual-stat {
+        position: absolute;
+        left: 24px;
+        top: 24px;
+        z-index: 2;
+        color: rgba(255,255,255,0.74);
+        font-size: 0.8rem;
+        font-weight: 800;
+    }
+
+    .visual-stat b {
+        display: block;
+        margin-top: 7px;
+        color: #fff;
+        font-size: 2.25rem;
+        letter-spacing: -1px;
+    }
+
+    .command-shell {
+        padding: 18px;
+        border-radius: 28px;
+        background: rgba(255,255,255,0.82);
+        border: 1px solid rgba(255,255,255,0.92);
+        box-shadow: var(--sf-shadow-md);
+        backdrop-filter: blur(22px);
+        margin: 12px 0 18px;
+        animation: sfFadeUp .65s ease both;
+    }
+
+    .command-head {
+        display: flex;
+        justify-content: space-between;
+        gap: 12px;
+        align-items: center;
+        margin-bottom: 14px;
+    }
+
+    .command-title {
+        font-size: 1.03rem;
+        font-weight: 950;
+        color: var(--sf-ink);
+        letter-spacing: -0.3px;
+    }
+
+    .command-caption {
+        color: var(--sf-soft);
+        font-size: 0.84rem;
+        font-weight: 750;
+    }
+
+    .command-section {
+        min-height: 100%;
+        padding: 15px;
+        border-radius: 22px;
+        border: 1px solid rgba(15,23,42,0.07);
+        background: linear-gradient(180deg, rgba(255,255,255,0.78), rgba(248,251,255,0.72));
+    }
+
+    div[data-testid="stVerticalBlockBorderWrapper"] {
+        border-radius: 22px;
+        border: 1px solid rgba(15,23,42,0.07);
+        background: linear-gradient(180deg, rgba(255,255,255,0.82), rgba(248,251,255,0.74));
+        box-shadow: 0 12px 28px rgba(15,23,42,0.06);
+        transition: transform .18s ease, box-shadow .18s ease;
+    }
+
+    div[data-testid="stVerticalBlockBorderWrapper"]:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 20px 42px rgba(15,23,42,0.10);
+    }
+
+    .command-section-title {
+        margin-bottom: 10px;
+        color: var(--sf-ink);
+        font-weight: 950;
+        font-size: 0.9rem;
+        letter-spacing: -0.1px;
+    }
+
+    .stButton > button {
+        min-height: 42px;
+        border-radius: 13px;
+        color: #fff !important;
+        background: linear-gradient(180deg, #0a84ff 0%, #006ee6 100%);
+        border: 1px solid rgba(10,132,255,0.32);
+        box-shadow: 0 9px 20px rgba(10,132,255,0.20);
+        transition: transform .18s ease, box-shadow .18s ease, border .18s ease;
+    }
+
+    .stButton > button:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 16px 28px rgba(10,132,255,0.24);
+    }
+
+    .stButton > button:active {
+        transform: translateY(0) scale(.99);
+    }
+
+    .stFileUploader section {
+        border-radius: 18px;
+        border: 1px dashed rgba(10,132,255,0.28);
+        background: rgba(10,132,255,0.035);
+    }
+
+    .card, .export-card, .room-card, .node-card, div[data-testid="stMetric"], .status-tile {
+        animation: sfFadeUp .55s ease both;
+        transition: transform .18s ease, box-shadow .18s ease, border-color .18s ease;
+    }
+
+    .card:hover, .export-card:hover, .room-card:hover, .node-card:hover, .status-tile:hover {
+        transform: translateY(-3px);
+        box-shadow: 0 22px 52px rgba(15,23,42,0.11);
+    }
+
+    .card {
+        min-height: 118px;
+        padding: 22px;
+        border-radius: 24px;
+    }
+
+    .metric-value {
+        font-size: clamp(1.9rem, 2.6vw, 2.75rem);
+    }
+
+    .status-strip {
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        margin-top: 6px;
+        margin-bottom: 16px;
+    }
+
+    .status-tile {
+        border-radius: 20px;
+        padding: 16px 18px;
+    }
+
+    .stTabs [data-baseweb="tab-list"] {
+        position: sticky;
+        top: 58px;
+        z-index: 20;
+        border-radius: 18px;
+        background: rgba(255,255,255,0.84);
+        backdrop-filter: blur(20px);
+    }
+
+    .stTabs [data-baseweb="tab"] {
+        min-height: 42px;
+        border-radius: 13px;
+    }
+
+    .stTabs [aria-selected="true"] {
+        color: white !important;
+        background: linear-gradient(180deg, #0a84ff, #006ee6) !important;
+        box-shadow: 0 10px 24px rgba(10,132,255,0.20);
+    }
+
+    section[data-testid="stSidebar"] {
+        background:
+            linear-gradient(180deg, rgba(255,255,255,0.92), rgba(241,246,252,0.92));
+        border-right: 1px solid rgba(15,23,42,0.08);
+    }
+
+    .sidebar-status {
+        padding: 14px;
+        border-radius: 18px;
+        background: rgba(255,255,255,0.74);
+        border: 1px solid rgba(15,23,42,0.08);
+        box-shadow: 0 10px 24px rgba(15,23,42,0.06);
+        margin: 10px 0 18px;
+    }
+
+    .sidebar-status b {
+        display: block;
+        color: var(--sf-ink);
+        font-size: 0.86rem;
+        margin-bottom: 6px;
+    }
+
+    .sidebar-status span {
+        color: var(--sf-soft);
+        font-size: 0.76rem;
+        overflow-wrap: anywhere;
+        font-weight: 750;
+    }
+
+    @media (max-width: 1100px) {
+        .hero {
+            grid-template-columns: 1fr;
+        }
+
+        .hero-visual {
+            min-height: 210px;
         }
     }
 </style>
@@ -1275,99 +1650,135 @@ if "auto_simulation_interval" not in st.session_state:
     st.session_state.auto_simulation_interval = 1.0
 
 
+def _reset_visual_runtime_state() -> None:
+    st.session_state.extracted_img = None
+    st.session_state.plan_img = None
+    st.session_state.heatmap_img = None
+    st.session_state.simulation_runtime_active = False
+    st.session_state.auto_simulation_enabled = False
+
+
+def _handle_upload_cad(file_obj) -> None:
+    if file_obj is None:
+        st.warning("Choose a DXF or DWG file first.")
+        return
+
+    result = upload_cad(file_obj)
+    if result.get("cad"):
+        _reset_visual_runtime_state()
+        st.success("CAD file uploaded successfully.")
+        st.rerun()
+
+    st.error(result.get("detail", "CAD upload failed."))
+
+
+def _handle_extract_rooms() -> None:
+    result = extract_rooms()
+    if result.get("result"):
+        rendered = render_extracted_rooms_image()
+        if rendered.get("image"):
+            st.session_state.extracted_img = rendered["image"]
+        else:
+            st.session_state.extracted_img = {
+                "file_name": "cad_extract_rooms.png",
+                "url": "/cad/rendered/cad_extract_rooms.png",
+                "kind": "extract_rooms",
+            }
+        st.session_state.simulation_runtime_active = False
+        st.session_state.auto_simulation_enabled = False
+        st.success("Rooms extracted.")
+        st.rerun()
+
+    st.error(result.get("detail", "Extraction failed."))
+
+
+def _handle_ai_planning() -> None:
+    result = plan_nodes()
+    if result.get("result"):
+        st.session_state.simulation_runtime_active = False
+        st.session_state.auto_simulation_enabled = False
+        st.success("AI planning completed.")
+        st.rerun()
+
+    st.error(result.get("detail", "Planning failed."))
+
+
+def _handle_render_plan() -> None:
+    result = render_plan()
+    if result.get("image"):
+        st.session_state.plan_img = result["image"]
+        st.success("Plan image rendered.")
+        st.rerun()
+
+    st.error(result.get("detail", "Render failed."))
+
+
+def _handle_render_heatmap() -> None:
+    result = render_heatmap()
+    if result.get("image"):
+        st.session_state.heatmap_img = result["image"]
+        st.success("Heatmap rendered.")
+        st.rerun()
+
+    st.error(result.get("detail", "Heatmap failed."))
+
+
+def _handle_apply_plan_to_simulation() -> None:
+    result = apply_plan_to_simulation()
+    if result.get("state"):
+        st.session_state.simulation_runtime_active = True
+        st.success("CAD plan applied to simulation.")
+        st.rerun()
+
+    st.error(result.get("detail", "Apply failed."))
+
+
+def _handle_next_simulation_step() -> None:
+    if not st.session_state.get("simulation_runtime_active", False):
+        st.warning("Apply the CAD plan before advancing runtime steps.")
+        return
+
+    result = next_step()
+    if result.get("step") is not None:
+        st.success("Simulation advanced.")
+        st.rerun()
+
+    st.error(result.get("detail", "Step failed."))
+
+
+def _handle_reset_simulation() -> None:
+    result = reset_simulation()
+    if result.get("state"):
+        st.session_state.simulation_runtime_active = False
+        st.session_state.auto_simulation_enabled = False
+        st.success("Simulation runtime reset.")
+        st.rerun()
+
+    st.error(result.get("detail", "Reset failed."))
+
+
+def _handle_full_project_reset() -> None:
+    result = full_project_reset()
+    if result.get("state") or result.get("message"):
+        _reset_visual_runtime_state()
+        st.success("Full project reset completed.")
+        st.rerun()
+
+    st.error(result.get("detail", "Full reset failed."))
+
+
 with st.sidebar:
-    st.markdown("## CAD Workflow")
+    st.markdown("## StructFi Console")
+    st.caption("System controls and playback settings.")
 
-    uploaded_cad = st.file_uploader(
-        "Upload DXF or DWG",
-        type=["dxf", "dwg"],
-        key="cad_upload"
-    )
+    st.markdown(f"""
+    <div class="sidebar-status">
+        <b>Backend</b>
+        <span>{_html(API_URL)}</span>
+    </div>
+    """, unsafe_allow_html=True)
 
-    if uploaded_cad is not None and st.button("Upload CAD File", use_container_width=True):
-        result = upload_cad(uploaded_cad)
-        if result.get("cad"):
-            st.session_state.extracted_img = None
-            st.session_state.plan_img = None
-            st.session_state.heatmap_img = None
-            st.session_state.simulation_runtime_active = False
-            st.session_state.auto_simulation_enabled = False
-            st.success("CAD file uploaded successfully")
-            st.rerun()
-        else:
-            st.error(result.get("detail", "CAD upload failed"))
-
-    if st.button("Extract Rooms", use_container_width=True):
-        result = extract_rooms()
-        if result.get("result"):
-            rendered = render_extracted_rooms_image()
-            if rendered.get("image"):
-                st.session_state.extracted_img = rendered["image"]
-            else:
-                # Fallback name used by CADVisualizer.render_rooms_overlay()
-                st.session_state.extracted_img = {
-                    "file_name": "cad_extract_rooms.png",
-                    "url": "/cad/rendered/cad_extract_rooms.png",
-                    "kind": "extract_rooms",
-                }
-            st.session_state.simulation_runtime_active = False
-            st.session_state.auto_simulation_enabled = False
-            st.success("Rooms extracted")
-            st.rerun()
-        else:
-            st.error(result.get("detail", "Extraction failed"))
-
-    if st.button("Run AI Planning", use_container_width=True):
-        result = plan_nodes()
-        if result.get("result"):
-            st.session_state.simulation_runtime_active = False
-            st.session_state.auto_simulation_enabled = False
-            st.success("Planning completed. Runtime clients, QoS, and alerts will appear only after applying the plan to simulation.")
-            st.rerun()
-        else:
-            st.error(result.get("detail", "Planning failed"))
-
-    if st.button("Render Plan Image", use_container_width=True):
-        result = render_plan()
-        if result.get("image"):
-            st.session_state.plan_img = result["image"]
-            st.success("Plan rendered")
-            st.rerun()
-        else:
-            st.error(result.get("detail", "Render failed"))
-
-    if st.button("Render Unified Heatmap", use_container_width=True):
-        result = render_heatmap()
-        if result.get("image"):
-            st.session_state.heatmap_img = result["image"]
-            st.success("Heatmap rendered")
-            st.rerun()
-        else:
-            st.error(result.get("detail", "Heatmap failed"))
-
-    st.markdown("---")
-
-    if st.button("Apply CAD Plan to Simulation", use_container_width=True):
-        result = apply_plan_to_simulation()
-        if result.get("state"):
-            st.session_state.simulation_runtime_active = True
-            st.success("CAD plan applied to simulation. Runtime client/traffic profiles and QoS telemetry are now enabled.")
-            st.rerun()
-        else:
-            st.error(result.get("detail", "Apply failed"))
-
-    if st.button("Next Simulation Step", use_container_width=True):
-        if not st.session_state.get("simulation_runtime_active", False):
-            st.warning("Apply the CAD plan to simulation before advancing runtime steps.")
-        else:
-            result = next_step()
-            if result.get("step") is not None:
-                st.success("Simulation advanced")
-                st.rerun()
-            else:
-                st.error(result.get("detail", "Step failed"))
-
-    st.markdown("#### Real-Time Playback")
+    st.markdown("#### Playback")
     st.session_state.auto_simulation_enabled = st.checkbox(
         "Auto-run simulation steps",
         value=bool(st.session_state.get("auto_simulation_enabled", False)),
@@ -1380,34 +1791,6 @@ with st.sidebar:
         value=float(st.session_state.get("auto_simulation_interval", 1.0)),
         step=0.5,
     )
-
-    if st.button("Reset Simulation", use_container_width=True):
-        result = reset_simulation()
-        if result.get("state"):
-            st.session_state.simulation_runtime_active = False
-            st.session_state.auto_simulation_enabled = False
-            st.success("Simulation runtime reset. CAD, extracted rooms, plans, and heatmap were kept.")
-            st.rerun()
-        else:
-            st.error(result.get("detail", "Reset failed"))
-
-    if st.button("Full Reset Project", use_container_width=True):
-        result = full_project_reset()
-        if result.get("state") or result.get("message"):
-            st.session_state.extracted_img = None
-            st.session_state.plan_img = None
-            st.session_state.heatmap_img = None
-            st.session_state.simulation_runtime_active = False
-            st.session_state.auto_simulation_enabled = False
-            st.success("Full project reset completed. Upload CAD to start again.")
-            st.rerun()
-        else:
-            st.error(result.get("detail", "Full reset failed"))
-
-    st.markdown("---")
-    st.markdown("### Export Center")
-    st.link_button("Download Excel Report", get_excel_export_url(), use_container_width=True)
-    st.link_button("Download PDF Report", get_pdf_export_url(), use_container_width=True)
 
 
 latest_cad = get_latest_cad()
@@ -1422,6 +1805,8 @@ if not building_data and latest_rooms:
 
 plan_nodes_list = _dashboard_plan_nodes(latest_plan)
 node_runtime_raw = sim_state.get("node_runtime", []) or []
+if node_runtime_raw:
+    st.session_state.simulation_runtime_active = True
 simulation_is_active = bool(st.session_state.get("simulation_runtime_active", False) or node_runtime_raw)
 security_state = sim_state.get("security_state", {}) or {}
 
@@ -1471,13 +1856,86 @@ placement = _dashboard_metric_number(
     0,
 )
 
-st.markdown("""
+st.markdown(f"""
 <div class="hero">
-    <h1>StructFi Command Center</h1>
-    <p>Apple-style workflow dashboard for CAD extraction, AI node planning, RF heatmap validation, live simulation, AI monitoring, IDS alerts, and local backend outputs.</p>
-    <div class="workflow-pill">Upload → Extract → Plan → Heatmap → Simulate → AI / IDS → Export</div>
+    <div>
+        <div class="hero-kicker"><span class="live-dot"></span> Enterprise Wi-Fi Simulation OS</div>
+        <h1>StructFi Command Center</h1>
+        <p>
+            A polished operations dashboard for CAD extraction, AI access-point planning,
+            RF validation, live client simulation, IDS monitoring, and mobile-ready backend control.
+        </p>
+        <div class="workflow-pill">Upload -> Extract -> Plan -> Visualize -> Simulate -> Monitor -> Export</div>
+    </div>
+    <div class="hero-visual">
+        <div class="visual-stat">Network runtime<b>{len(clients)}</b><span>active clients</span></div>
+        <div class="visual-node main">AP</div>
+        <div class="visual-node secondary">IDS</div>
+    </div>
 </div>
 """, unsafe_allow_html=True)
+
+st.markdown("""
+<div class="command-shell">
+    <div class="command-head">
+        <div>
+            <div class="command-title">Command Console</div>
+            <div class="command-caption">Run the demo from left to right. Upload once, then advance the workflow without leaving the main view.</div>
+        </div>
+    </div>
+</div>
+""", unsafe_allow_html=True)
+
+upload_col, cad_col, sim_col, export_col = st.columns([1.15, 1.35, 1.15, 0.95])
+
+with upload_col:
+    with st.container(border=True):
+        st.markdown('<div class="command-section-title">1. Source CAD</div>', unsafe_allow_html=True)
+        uploaded_cad = st.file_uploader(
+            "DXF or DWG file",
+            type=["dxf", "dwg"],
+            key="cad_upload_main",
+            label_visibility="collapsed",
+        )
+        if st.button("Upload CAD", use_container_width=True, key="action_upload_cad"):
+            _handle_upload_cad(uploaded_cad)
+
+with cad_col:
+    with st.container(border=True):
+        st.markdown('<div class="command-section-title">2. AI Planning Pipeline</div>', unsafe_allow_html=True)
+        cad_a, cad_b = st.columns(2)
+        with cad_a:
+            if st.button("Extract Rooms", use_container_width=True, key="action_extract_rooms"):
+                _handle_extract_rooms()
+            if st.button("Render Plan", use_container_width=True, key="action_render_plan"):
+                _handle_render_plan()
+        with cad_b:
+            if st.button("Run AI Planning", use_container_width=True, key="action_ai_plan"):
+                _handle_ai_planning()
+            if st.button("Render Heatmap", use_container_width=True, key="action_heatmap"):
+                _handle_render_heatmap()
+
+with sim_col:
+    with st.container(border=True):
+        st.markdown('<div class="command-section-title">3. Runtime Control</div>', unsafe_allow_html=True)
+        if st.button("Apply to Simulation", use_container_width=True, key="action_apply_sim"):
+            _handle_apply_plan_to_simulation()
+        if st.button("Next Step", use_container_width=True, key="action_next_step"):
+            _handle_next_simulation_step()
+        st.caption(f"Current step: {sim_state.get('step', 0)}")
+
+with export_col:
+    with st.container(border=True):
+        st.markdown('<div class="command-section-title">4. Output</div>', unsafe_allow_html=True)
+        st.link_button("Excel Report", get_excel_export_url(), use_container_width=True)
+        st.link_button("PDF Report", get_pdf_export_url(), use_container_width=True)
+        reset_a, reset_b = st.columns(2)
+        with reset_a:
+            if st.button("Reset", use_container_width=True, key="action_reset_runtime"):
+                _handle_reset_simulation()
+        with reset_b:
+            if st.button("Full Reset", use_container_width=True, key="action_full_reset"):
+                _handle_full_project_reset()
 
 # -------------------------------------------------------------------
 # Executive metrics
