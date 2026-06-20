@@ -497,9 +497,12 @@ def _current_images() -> Dict[str, Optional[Dict[str, Any]]]:
 
 
 FCM_ACCESS_TOKEN_CACHE: Dict[str, Any] = {}
+PUSH_DEBUG_EVENTS: List[str] = []
 
 
 def _push_log(message: str) -> None:
+    PUSH_DEBUG_EVENTS.append(message)
+    del PUSH_DEBUG_EVENTS[:-50]
     print(f"[StructFi Push] {message}", flush=True)
 
 
@@ -559,12 +562,14 @@ def _firebase_access_token() -> Optional[str]:
 
     service_account = _firebase_service_account()
     if not service_account:
+        _push_log("Firebase service account is not configured")
         return None
 
     client_email = service_account.get("client_email")
     private_key = str(service_account.get("private_key") or "").replace("\\n", "\n")
 
     if not client_email or not private_key:
+        _push_log("Firebase service account is missing client_email or private_key")
         return None
 
     try:
@@ -657,6 +662,9 @@ def _send_fcm_message(token: str, alert: Dict[str, Any]) -> bool:
     if not project_id or not access_token:
         legacy_key = os.getenv("FCM_SERVER_KEY", "").strip()
         if not legacy_key:
+            _push_log(
+                "FCM credentials unavailable: missing project/access token and no FCM_SERVER_KEY fallback"
+            )
             return False
 
         legacy_payload = {
@@ -3050,6 +3058,7 @@ def mobile_push_status():
         "fcm_server_key_configured": bool(os.getenv("FCM_SERVER_KEY", "").strip()),
         "cryptography_available": _cryptography_available(),
         "sent_alerts_count": len(sent_alerts) if isinstance(sent_alerts, list) else 0,
+        "recent_debug": PUSH_DEBUG_EVENTS[-10:],
         "token_preview": [
             {
                 "platform": item.get("platform"),
@@ -3074,6 +3083,8 @@ def _cryptography_available() -> bool:
 
 @app.get("/mobile/push/test")
 def mobile_push_test():
+    PUSH_DEBUG_EVENTS.clear()
+
     test_alert = {
         "id": f"manual-test-{int(time.time())}",
         "severity": "critical",
@@ -3099,6 +3110,7 @@ def mobile_push_test():
         "tokens_count": len(tokens),
         "sent_count": sent_count,
         "success": sent_count > 0,
+        "recent_debug": PUSH_DEBUG_EVENTS[-20:],
     }
 
 
