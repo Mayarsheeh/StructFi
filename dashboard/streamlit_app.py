@@ -1940,7 +1940,7 @@ st.markdown("""
         grid-template-columns: minmax(0, 1.25fr) minmax(280px, 0.75fr);
         gap: 22px;
         align-items: stretch;
-        padding: clamp(20px, 3vw, 34px);
+        padding: clamp(18px, 2.4vw, 28px);
         border-radius: 32px;
         background:
             linear-gradient(135deg, rgba(255,255,255,0.96), rgba(242,247,255,0.90)),
@@ -1964,26 +1964,26 @@ st.markdown("""
     }
 
     .sf-hero-pro h1 {
-        margin: 16px 0 10px;
+        margin: 13px 0 9px;
         color: #0f172a;
         max-width: 820px;
-        font-size: clamp(2.25rem, 4.8vw, 5rem);
+        font-size: clamp(2.35rem, 4.4vw, 4.55rem);
         line-height: 0.94;
         letter-spacing: -3px;
         font-weight: 950;
     }
 
     .sf-hero-pro p {
-        max-width: 780px;
+        max-width: 640px;
         color: #64748b;
-        font-size: 1.02rem;
-        line-height: 1.58;
-        font-weight: 700;
+        font-size: 0.98rem;
+        line-height: 1.48;
+        font-weight: 760;
     }
 
     .sf-mini-map {
         position: relative;
-        min-height: 260px;
+        min-height: 220px;
         border-radius: 26px;
         overflow: hidden;
         color: white;
@@ -2067,15 +2067,15 @@ st.markdown("""
 
     .sf-kpi-grid {
         display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
-        gap: 14px;
-        margin: 16px 0;
+        grid-template-columns: repeat(auto-fit, minmax(158px, 1fr));
+        gap: 12px;
+        margin: 14px 0;
     }
 
     .sf-kpi {
-        min-height: 112px;
-        padding: 18px;
-        border-radius: 24px;
+        min-height: 102px;
+        padding: 16px;
+        border-radius: 22px;
         background: rgba(255,255,255,0.82);
         border: 1px solid rgba(255,255,255,0.92);
         box-shadow: 0 18px 44px rgba(15,23,42,0.08);
@@ -2117,10 +2117,63 @@ st.markdown("""
 
     .sf-kpi small {
         display: block;
-        margin-top: 10px;
+        margin-top: 8px;
         color: #64748b;
-        font-size: 0.82rem;
+        font-size: 0.78rem;
         font-weight: 800;
+    }
+
+    .sf-progress-rail {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+        gap: 10px;
+        margin: 4px 0 18px;
+    }
+
+    .sf-stage {
+        position: relative;
+        overflow: hidden;
+        min-height: 70px;
+        padding: 13px 14px;
+        border-radius: 20px;
+        background: rgba(255,255,255,0.70);
+        border: 1px solid rgba(15,23,42,0.08);
+        box-shadow: 0 10px 28px rgba(15,23,42,0.06);
+    }
+
+    .sf-stage::after {
+        content: "";
+        position: absolute;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        height: 3px;
+        background: rgba(148,163,184,0.35);
+    }
+
+    .sf-stage.done::after {
+        background: linear-gradient(90deg, #16a34a, #22c55e);
+    }
+
+    .sf-stage.active::after {
+        background: linear-gradient(90deg, #0a84ff, #60a5fa);
+    }
+
+    .sf-stage b {
+        display: block;
+        color: #0f172a;
+        font-size: 0.82rem;
+        font-weight: 950;
+    }
+
+    .sf-stage span {
+        display: block;
+        margin-top: 8px;
+        color: #64748b;
+        font-size: 0.78rem;
+        font-weight: 900;
+        text-transform: uppercase;
+        letter-spacing: 0.24px;
     }
 
     .sf-section-head {
@@ -2141,7 +2194,7 @@ st.markdown("""
     .sf-section-head p {
         margin: 4px 0 0;
         color: #64748b;
-        font-size: 0.88rem;
+        font-size: 0.84rem;
         font-weight: 750;
     }
 
@@ -2235,6 +2288,16 @@ simulation_label = "Live" if simulation_is_active else "Standby"
 simulation_dot_class = "" if simulation_is_active else "warn"
 alert_kpi_class = "danger" if critical_alerts_count else ""
 client_kpi_class = "live" if simulation_is_active else ""
+stage_source_done = latest_cad is not None
+stage_rooms_done = extracted_rooms_count > 0
+stage_plan_done = suggested_nodes_count > 0
+stage_runtime_done = simulation_is_active
+stage_alerts_done = len(alerts) > 0
+stage_source_class = "done" if stage_source_done else "active"
+stage_rooms_class = "done" if stage_rooms_done else ("active" if stage_source_done else "")
+stage_plan_class = "done" if stage_plan_done else ("active" if stage_rooms_done else "")
+stage_runtime_class = "done" if stage_runtime_done else ("active" if stage_plan_done else "")
+stage_alerts_class = "done" if stage_alerts_done else ("active" if stage_runtime_done else "")
 
 st.markdown(f"""
 <div class="sf-topbar">
@@ -2248,18 +2311,15 @@ st.markdown(f"""
     <div class="sf-top-pills">
         <div class="sf-pill"><span class="sf-dot {simulation_dot_class}"></span>{simulation_label}</div>
         <div class="sf-pill">Step {sim_state.get("step", 0)}</div>
-        <div class="sf-pill">{_html(API_URL)}</div>
+        <div class="sf-pill">Render API</div>
     </div>
 </div>
 
 <div class="sf-hero-pro">
     <div>
-        <div class="sf-eyebrow">Enterprise Operations Surface</div>
-        <h1>Plan. Simulate. Monitor.</h1>
-        <p>
-            A clean control surface for turning CAD floorplans into AI placement,
-            RF visuals, runtime clients, IDS alerts, and exportable reports.
-        </p>
+        <div class="sf-eyebrow">Live Network Lab</div>
+        <h1>Mission Control.</h1>
+        <p>CAD to AI planning, RF views, live simulation, IDS, and reports.</p>
     </div>
     <div class="sf-mini-map">
         <div class="sf-map-stat">Live clients<b>{len(clients)}</b></div>
@@ -2270,18 +2330,26 @@ st.markdown(f"""
 </div>
 
 <div class="sf-kpi-grid">
-    <div class="sf-kpi"><span>CAD Source</span><b>{cad_source_label}</b><small>Uploaded floorplan</small></div>
-    <div class="sf-kpi"><span>Rooms</span><b>{extracted_rooms_count}</b><small>Extracted spaces</small></div>
-    <div class="sf-kpi"><span>AI Nodes</span><b>{suggested_nodes_count}</b><small>Suggested access points</small></div>
-    <div class="sf-kpi"><span>Placement</span><b>{placement}</b><small>Planning score</small></div>
-    <div class="sf-kpi {client_kpi_class}"><span>Clients</span><b>{len(clients)}</b><small>Runtime sessions</small></div>
+    <div class="sf-kpi"><span>CAD</span><b>{cad_source_label}</b><small>Source</small></div>
+    <div class="sf-kpi"><span>Rooms</span><b>{extracted_rooms_count}</b><small>Extracted</small></div>
+    <div class="sf-kpi"><span>Nodes</span><b>{suggested_nodes_count}</b><small>AI plan</small></div>
+    <div class="sf-kpi"><span>Score</span><b>{placement}</b><small>Placement</small></div>
+    <div class="sf-kpi {client_kpi_class}"><span>Clients</span><b>{len(clients)}</b><small>Live</small></div>
     <div class="sf-kpi {alert_kpi_class}"><span>Alerts</span><b>{len(alerts)}</b><small>{critical_alerts_count} critical</small></div>
+</div>
+
+<div class="sf-progress-rail">
+    <div class="sf-stage {stage_source_class}"><b>01</b><span>Source</span></div>
+    <div class="sf-stage {stage_rooms_class}"><b>02</b><span>Rooms</span></div>
+    <div class="sf-stage {stage_plan_class}"><b>03</b><span>Plan</span></div>
+    <div class="sf-stage {stage_runtime_class}"><b>04</b><span>Runtime</span></div>
+    <div class="sf-stage {stage_alerts_class}"><b>05</b><span>Monitor</span></div>
 </div>
 
 <div class="sf-section-head">
     <div>
-        <h2>Workflow Deck</h2>
-        <p>Run the demo left to right. Controls stay on the page and wrap cleanly on smaller screens.</p>
+        <h2>Workflow</h2>
+        <p>Run left to right.</p>
     </div>
 </div>
 """, unsafe_allow_html=True)
@@ -2290,25 +2358,25 @@ upload_col, cad_col, runtime_col, output_col = st.columns([1, 1, 1, 1])
 
 with upload_col:
     with st.container(border=True):
-        st.markdown('<div class="command-section-title">01 Source</div>', unsafe_allow_html=True)
+        st.markdown('<div class="command-section-title">Source</div>', unsafe_allow_html=True)
         uploaded_cad = st.file_uploader(
-            "Upload DXF or DWG",
+            "DXF / DWG",
             type=["dxf", "dwg"],
             key="cad_upload_main",
         )
-        if st.button("Upload CAD", use_container_width=True, key="action_upload_cad"):
+        if st.button("Upload", use_container_width=True, key="action_upload_cad"):
             _handle_upload_cad(uploaded_cad)
 
 with cad_col:
     with st.container(border=True):
-        st.markdown('<div class="command-section-title">02 Build</div>', unsafe_allow_html=True)
-        if st.button("Extract Rooms", use_container_width=True, key="action_extract_rooms"):
+        st.markdown('<div class="command-section-title">Build</div>', unsafe_allow_html=True)
+        if st.button("Extract", use_container_width=True, key="action_extract_rooms"):
             _handle_extract_rooms()
-        if st.button("Run AI Planning", use_container_width=True, key="action_ai_plan"):
+        if st.button("AI Plan", use_container_width=True, key="action_ai_plan"):
             _handle_ai_planning()
         visual_a, visual_b = st.columns(2)
         with visual_a:
-            if st.button("Plan", use_container_width=True, key="action_render_plan"):
+            if st.button("Preview", use_container_width=True, key="action_render_plan"):
                 _handle_render_plan()
         with visual_b:
             if st.button("Heatmap", use_container_width=True, key="action_heatmap"):
@@ -2316,13 +2384,13 @@ with cad_col:
 
 with runtime_col:
     with st.container(border=True):
-        st.markdown('<div class="command-section-title">03 Runtime</div>', unsafe_allow_html=True)
-        if st.button("Apply Simulation", use_container_width=True, key="action_apply_sim"):
+        st.markdown('<div class="command-section-title">Runtime</div>', unsafe_allow_html=True)
+        if st.button("Apply", use_container_width=True, key="action_apply_sim"):
             _handle_apply_plan_to_simulation()
-        if st.button("Next Step", use_container_width=True, key="action_next_step"):
+        if st.button("Step", use_container_width=True, key="action_next_step"):
             _handle_next_simulation_step()
         st.session_state.auto_simulation_enabled = st.checkbox(
-            "Auto-run",
+            "Auto",
             value=bool(st.session_state.get("auto_simulation_enabled", False)),
             help="Advance one simulation step repeatedly.",
         )
@@ -2336,9 +2404,9 @@ with runtime_col:
 
 with output_col:
     with st.container(border=True):
-        st.markdown('<div class="command-section-title">04 Output</div>', unsafe_allow_html=True)
-        st.link_button("Excel Report", get_excel_export_url(), use_container_width=True)
-        st.link_button("PDF Report", get_pdf_export_url(), use_container_width=True)
+        st.markdown('<div class="command-section-title">Output</div>', unsafe_allow_html=True)
+        st.link_button("Excel", get_excel_export_url(), use_container_width=True)
+        st.link_button("PDF", get_pdf_export_url(), use_container_width=True)
         reset_a, reset_b = st.columns(2)
         with reset_a:
             if st.button("Reset", use_container_width=True, key="action_reset_runtime"):
@@ -2366,12 +2434,10 @@ workflow_tabs = st.tabs([
 # 1. Workflow
 # -------------------------------------------------------------------
 with workflow_tabs[0]:
-    st.markdown('<div class="section-title">Workflow Overview</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-title">Workflow</div>', unsafe_allow_html=True)
     st.markdown("""
     <div class="export-card">
-        <div class="subtle">
-            This page is organized for the graduation demo: first show CAD extraction, then AI node placement, then RF heatmap, and finally live simulation.
-        </div>
+        <div class="subtle">Source -> Build -> Runtime -> Output</div>
     </div>
     """, unsafe_allow_html=True)
 
@@ -2384,7 +2450,7 @@ with workflow_tabs[0]:
         elif latest_rooms and latest_rooms.get("rooms"):
             st.image(get_rendered_url("cad_extract_rooms.png"), use_container_width=True)
         else:
-            st.info("Use Workflow Deck -> Extract Rooms to generate this preview.")
+            st.info("Run Extract.")
 
     with plan_col:
         st.markdown('<div class="section-title">AI Planning Preview</div>', unsafe_allow_html=True)
@@ -2392,13 +2458,13 @@ with workflow_tabs[0]:
         if st.session_state.plan_img:
             st.image(get_rendered_url(st.session_state.plan_img["file_name"]), use_container_width=True)
         else:
-            st.info("Press Run AI Planning, then Render Plan Image.")
+            st.info("Run AI Plan, then Preview.")
 
     st.markdown('<div class="section-title">Unified RF Heatmap</div>', unsafe_allow_html=True)
     if st.session_state.heatmap_img:
         st.image(get_rendered_url(st.session_state.heatmap_img["file_name"]), use_container_width=True)
     else:
-        st.info("Press Render Unified Heatmap to view RF coverage quality.")
+        st.info("Run Heatmap.")
 
 # -------------------------------------------------------------------
 # 2. Live Simulation
