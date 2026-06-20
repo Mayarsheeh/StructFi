@@ -13,3 +13,4 @@ reportlab
 openpyxl
 XlsxWriter
 opencv-python-headless
+cryptography
